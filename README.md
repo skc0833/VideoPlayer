@@ -24,6 +24,9 @@ origin  https://github.com/skc0833/VideoPlayer.git (fetch)
 > git remote set-url origin git@github.com:skc0833/VideoPlayer.git
 > git remote -v
 > origin  git@github.com:skc0833/VideoPlayer.git (fetch)
+
+// Git bash 쉘에서
+$ GIT_SSH_COMMAND="ssh -v -i ~/.ssh/skc0833_gmail" git push
 ```
 
 ### 1. MSYS2
