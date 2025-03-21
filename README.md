@@ -11,22 +11,31 @@ FFmpeg_DIR = E:\VideoPlayer\FFmpeg
 ```
 
 ```
-// git push 를 위해서는 최초에 SSH-Key 생성해서 등록 필요
-> ssh-keygen -t ed25519 -C "skc0833@gmail.com"
-생성된 C:\Users\skc0833/.ssh/id_ed25519.pub 의 내용을 github 우상단(원형 아이콘) Settings / SSH Keys 페이지에서 New SSH key 로 업로드
+// git push 를 위해서는 최초에 SSH-Key 생성해서 등록 필요(Git Bash 쉘에서 실행)
+$ ssh-keygen -t ed25519 -C "skc0833@gmail.com" -f ~/.ssh/skc0833_gmail
+생성된 C:\Users\skc0833\.ssh\skc0833_gmail.pub 의 내용을 github 우상단(원형 아이콘) Settings / SSH Keys 페이지에서 New SSH key 로 업로드
 
 // SSH 방식으로 remote URL 변경
-> git remote -v
+$ git remote -v
 origin  https://github.com/skc0833/VideoPlayer.git (fetch)
 <-- 이렇게 표시되면 HTTPS 방식으로 연결된 상태이며, SSH 방식으로 변경이 필요함
 (아니면 로그인창이 뜨고, 로그인해도 계속 실패함. HTTPS에선 SSH 키가 아니라 토큰을 요구함)
 
-> git remote set-url origin git@github.com:skc0833/VideoPlayer.git
-> git remote -v
-> origin  git@github.com:skc0833/VideoPlayer.git (fetch)
+$ git remote set-url origin git@github.com:skc0833/VideoPlayer.git
+$ git remote -v
+$ origin  git@github.com:skc0833/VideoPlayer.git (fetch)
+<-- SSH 방식으로 연결된 상태임
 
-// Git bash 쉘에서
-$ GIT_SSH_COMMAND="ssh -v -i ~/.ssh/skc0833_gmail" git push
+// C:\Users\skc0833\.ssh\config
+Host github.com-videoplayer
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/skc0833_gmail
+  IdentitiesOnly yes
+
+$ git remote set-url origin git@github.com-videoplayer:skc0833/VideoPlayer.git
+
+이후 git push 등이 성공함
 ```
 
 ### 1. MSYS2
@@ -72,7 +81,7 @@ $ cd E:\VideoPlayer\FFmpeg
 -> 이하 <FFmpeg_DIR>
 $ git clone https://github.com/FFmpeg/FFmpeg.git
 $ git checkout release/7.1
--> 현 시점 최신 release branch(527MB)
+-> 현 시점 최신 release branch(527MB), 참고로 기존에는 release/5.1 로 테스트했었음
 
 // git clone -b release/7.1 --single-branch <repo> 도 가능함(460MB)
 // 참고로 git clone --depth 1 <repo> 는 다운로드 용량이 많이 줄지만(100MB), branch 이동이 안됨
@@ -116,17 +125,20 @@ $ make install
 
 * 프로젝트 속성 설정
 ```
-TODO: 이하 경로들 VideoPlayer_ROOT 하위로 수정 필요!!!
-
 // 디버깅 / 환경
-PATH=E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\lib\x64;E:\skc_work\VideoEditor\FFmpeg\libswresample;E:\skc_work\VideoEditor\FFmpeg\libavfilter;E:\skc_work\VideoEditor\FFmpeg\libswscale;E:\skc_work\VideoEditor\FFmpeg\libavformat;E:\skc_work\VideoEditor\FFmpeg\libavutil;E:\skc_work\VideoEditor\FFmpeg\libavcodec;E:\skc_work\VideoEditor\FFmpeg\libavdevice;E:\skc_work\VideoEditor\FFmpeg\libpostproc;%PATH%
+PATH=<SDL2_DIR>\SDL2-2.32.2\lib\x64;<FFmpeg_DIR>\libswresample;<FFmpeg_DIR>\libavfilter;<FFmpeg_DIR>\libswscale;<FFmpeg_DIR>\libavformat;<FFmpeg_DIR>\libavutil;<FFmpeg_DIR>\libavcodec;<FFmpeg_DIR>\libavdevice;<FFmpeg_DIR>\libpostproc;%PATH%
+-->
+PATH=<SDL2_DIR>\SDL2-2.32.2\lib\x64;E:\VideoPlayer\FFmpeg\libswresample;E:\VideoPlayer\FFmpeg\libavfilter;E:\VideoPlayer\FFmpeg\libswscale;E:\VideoPlayer\FFmpeg\libavformat;E:\VideoPlayer\FFmpeg\libavutil;E:\VideoPlayer\FFmpeg\libavcodec;E:\VideoPlayer\FFmpeg\libavdevice;E:\VideoPlayer\FFmpeg\libpostproc;%PATH%
 
 // C/C++ / 일반 / 추가 포함 디렉터리
-E:\skc_work\VideoEditor\FFmpeg;E:\skc_work\VideoEditor\FFmpeg\libavdevice;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
+<FFmpeg_DIR>;<FFmpeg_DIR>\libavdevice;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
+-->
+E:\VideoPlayer\FFmpeg;E:\VideoPlayer\FFmpeg\libavdevice;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
 
 // C/C++ / 전처리기
 _CRT_SECURE_NO_WARNINGS 추가
 
 // 링커 / 입력 / 추가 종속성
-E:\skc_work\VideoEditor\FFmpeg\libavcodec\avcodec.lib;E:\skc_work\VideoEditor\FFmpeg\libavutil\avutil.lib;E:\skc_work\VideoEditor\FFmpeg\libavformat\avformat.lib;E:\skc_work\VideoEditor\FFmpeg\libswscale\swscale.lib;E:\skc_work\VideoEditor\FFmpeg\libavfilter\avfilter.lib;E:\skc_work\VideoEditor\FFmpeg\libswresample\swresample.lib;E:\skc_work\VideoEditor\FFmpeg\libavdevice\avdevice.lib;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
-
+<FFmpeg_DIR>\libavcodec\avcodec.lib;<FFmpeg_DIR>\libavutil\avutil.lib;<FFmpeg_DIR>\libavformat\avformat.lib;<FFmpeg_DIR>\libswscale\swscale.lib;<FFmpeg_DIR>\libavfilter\avfilter.lib;<FFmpeg_DIR>\libswresample\swresample.lib;<FFmpeg_DIR>\libavdevice\avdevice.lib;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
+-->
+E:\VideoPlayer\FFmpeg\libavcodec\avcodec.lib;E:\VideoPlayer\FFmpeg\libavutil\avutil.lib;E:\VideoPlayer\FFmpeg\libavformat\avformat.lib;E:\VideoPlayer\FFmpeg\libswscale\swscale.lib;E:\VideoPlayer\FFmpeg\libavfilter\avfilter.lib;E:\VideoPlayer\FFmpeg\libswresample\swresample.lib;E:\VideoPlayer\FFmpeg\libavdevice\avdevice.lib;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
