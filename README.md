@@ -15,27 +15,23 @@ FFmpeg_DIR = E:\VideoPlayer\FFmpeg
 $ ssh-keygen -t ed25519 -C "skc0833@gmail.com" -f ~/.ssh/skc0833_gmail
 생성된 C:\Users\skc0833\.ssh\skc0833_gmail.pub 의 내용을 github 우상단(원형 아이콘) Settings / SSH Keys 페이지에서 New SSH key 로 업로드
 
-// SSH 방식으로 remote URL 변경
-$ git remote -v
-origin  https://github.com/skc0833/VideoPlayer.git (fetch)
-<-- 이렇게 표시되면 HTTPS 방식으로 연결된 상태이며, SSH 방식으로 변경이 필요함
-(아니면 로그인창이 뜨고, 로그인해도 계속 실패함. HTTPS에선 SSH 키가 아니라 토큰을 요구함)
+// 생성된 키를 ssh-agent 에 등록
+$ eval "$(ssh-agent -s)"
+$ ssh-add ~/.ssh/skc0833_gmail
+$ ssh -T git@github.com -v
+-->
+debug1: Offering public key: /c/Users/skc08/.ssh/id_rsa RSA SHA256:BAxGoIwTAiz8IdkE31RPosGQQgL1AjOOBGL8pw2mDzk
+이 아니라 아래와 같이 skc0833@gmail.com 가 출력돼야 함
+debug1: Offering public key: skc0833@gmail.com ED25519 SHA256:67budIIhdcNNGnrSFFYn2S6N1XmefKtzIrKPIt1b5Bw agent
 
-$ git remote set-url origin git@github.com:skc0833/VideoPlayer.git
-$ git remote -v
-$ origin  git@github.com:skc0833/VideoPlayer.git (fetch)
-<-- SSH 방식으로 연결된 상태임
-
-// C:\Users\skc0833\.ssh\config
+// C:\Users\skc0833\.ssh\config 편집
 Host github.com-videoplayer
   HostName github.com
   User git
   IdentityFile ~/.ssh/skc0833_gmail
   IdentitiesOnly yes
 
-$ git remote set-url origin git@github.com-videoplayer:skc0833/VideoPlayer.git
-
-이후 git push 등이 성공함
+$ git clone git@github.com:skc0833/VideoPlayer.git
 ```
 
 ### 1. MSYS2
