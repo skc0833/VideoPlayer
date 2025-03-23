@@ -4,10 +4,9 @@ FFmepg player
 ## Prerequisites
 
 ```
-VideoPlayer_ROOT = E:\VideoPlayer
-MSYS2_DIR = E:\msys64
-SDL2_DIR = E:\VideoPlayer\SDL2-2.32.2
-FFmpeg_DIR = E:\VideoPlayer\FFmpeg
+VideoPlayer_ROOT = d:\VideoPlayer
+MSYS2_DIR = d:\msys64
+FFmpeg_DIR = d:\VideoPlayer\FFmpeg
 ```
 
 ```
@@ -65,8 +64,7 @@ yasm 1.3.0-3
 
 ### 3. FFmpeg
 ```
-$ cd E:\VideoPlayer
--> 이하 <FFmpeg_DIR>
+$ cd <VideoPlayer_ROOT>
 $ git clone https://github.com/FFmpeg/FFmpeg.git
 $ git checkout release/7.1
 -> 현 시점 최신 release branch(527MB), 참고로 기존에는 release/5.1 로 테스트했었음
@@ -82,10 +80,10 @@ $ git checkout release/7.1
 (그래야 MSYS에서 gcc 를 실행할때 비주얼스튜디오의 컴파일러와 링커를 찾을 수 있게 됨)
 
 1) 윈도우 시작메뉴에서 “x64 Native Tools Command Prompt for VS 2022” 를 실행<br/>
-2019 버전에서는 아래 configure 시에 Compiler lacks C11 support 에러가 발생하고 있음<br/>
+2019 버전에서는 아래 ./configure 시에 Compiler lacks C11 support 에러가 발생하고 있음<br/>
 2022 버전에서는 ./configure: line 1774: cmp: command not found 에러가 표시되지만 configure는 성공하는 듯함<br/>
 
-3) 다시 아래 명령어로 새로운 콘솔(msys)을 띄운다.<br/>
+2) 다시 아래 명령어로 새로운 콘솔(msys)을 띄운다.<br/>
 ```
 $ <MSYS2_DIR>\msys2_shell.cmd -msys -use-full-path
 
@@ -101,7 +99,7 @@ $ ./configure --prefix=../install --toolchain=msvc --arch=x86_64 --enable-yasm -
 --> 화면에 아무것도 표시 안되면서 한참 걸림(5분 이상)
 
 $ make -j 8     // 실패시 make clean 수행후 재실행
-$ make install
+$ make install  // 참고로 현재 install 된 위치는 사용하고 있지 않음
 
 참고로 ./configure --help 로 전체 옵션 확인 가능함
 공식 가이드 내용은(https://trac.ffmpeg.org/wiki/CompilationGuide/MSVC)
@@ -111,24 +109,22 @@ $ make install
 
 ## MSVC Project 생성
 
-* VS2022 에서 콘솔 프로젝트 생성(빌드시 x64 로 선택)
+* VS2022 에서 C++ 콘솔앱 프로젝트 생성(빌드시 x64 로 선택)<br/>
+프로젝트 이름: VideoPlayer, 위치: <VideoPlayer_ROOT>\VideoPlayer (e.g, d:\VideoPlayer\VideoPlayer)<br/>
+솔루션 및 프로젝트를 같은 디렉토리에 배치
+
+* VS2022 에서 빌드시 error MSB8020: v143 에러가 발생하면, 프로젝트 속성의 플랫폼 도구 집합을 Visual Studio 2019 (v142) 로 설정
 
 * 프로젝트 속성 설정
 ```
 // 디버깅 / 환경
-PATH=<SDL2_DIR>\lib\x64;<FFmpeg_DIR>\libswresample;<FFmpeg_DIR>\libavfilter;<FFmpeg_DIR>\libswscale;<FFmpeg_DIR>\libavformat;<FFmpeg_DIR>\libavutil;<FFmpeg_DIR>\libavcodec;<FFmpeg_DIR>\libavdevice;<FFmpeg_DIR>\libpostproc;%PATH%
--->
-PATH=E:\VideoPlayer\SDL2-2.32.2\lib\x64;E:\VideoPlayer\FFmpeg\libswresample;E:\VideoPlayer\FFmpeg\libavfilter;E:\VideoPlayer\FFmpeg\libswscale;E:\VideoPlayer\FFmpeg\libavformat;E:\VideoPlayer\FFmpeg\libavutil;E:\VideoPlayer\FFmpeg\libavcodec;E:\VideoPlayer\FFmpeg\libavdevice;E:\VideoPlayer\FFmpeg\libpostproc;%PATH%
+PATH=$(ProjectDir)\..\SDL2-2.32.2\lib\x64;$(ProjectDir)\..\FFmpeg\libswresample;$(ProjectDir)\..\FFmpeg\libavfilter;$(ProjectDir)\..\FFmpeg\libswscale;$(ProjectDir)\..\FFmpeg\libavformat;$(ProjectDir)\..\FFmpeg\libavutil;$(ProjectDir)\..\FFmpeg\libavcodec;$(ProjectDir)\..\FFmpeg\libavdevice;$(ProjectDir)\..\FFmpeg\libpostproc;%PATH%
 
 // C/C++ / 일반 / 추가 포함 디렉터리
-<FFmpeg_DIR>;<FFmpeg_DIR>\libavdevice;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
--->
-E:\VideoPlayer\FFmpeg;E:\VideoPlayer\FFmpeg\libavdevice;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
+$(ProjectDir)\..\FFmpeg;$(ProjectDir)\..\FFmpeg\fftools;$(ProjectDir)\..\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
 
 // C/C++ / 전처리기
 _CRT_SECURE_NO_WARNINGS 추가
 
 // 링커 / 입력 / 추가 종속성
-<FFmpeg_DIR>\libavcodec\avcodec.lib;<FFmpeg_DIR>\libavutil\avutil.lib;<FFmpeg_DIR>\libavformat\avformat.lib;<FFmpeg_DIR>\libswscale\swscale.lib;<FFmpeg_DIR>\libavfilter\avfilter.lib;<FFmpeg_DIR>\libswresample\swresample.lib;<FFmpeg_DIR>\libavdevice\avdevice.lib;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
--->
-E:\VideoPlayer\FFmpeg\libavcodec\avcodec.lib;E:\VideoPlayer\FFmpeg\libavutil\avutil.lib;E:\VideoPlayer\FFmpeg\libavformat\avformat.lib;E:\VideoPlayer\FFmpeg\libswscale\swscale.lib;E:\VideoPlayer\FFmpeg\libavfilter\avfilter.lib;E:\VideoPlayer\FFmpeg\libswresample\swresample.lib;E:\VideoPlayer\FFmpeg\libavdevice\avdevice.lib;E:\dev\VideoPlayer\SDL2-devel-2.32.2-VC\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
+$(ProjectDir)\..\FFmpeg\libavcodec\avcodec.lib;$(ProjectDir)\..\FFmpeg\libavutil\avutil.lib;$(ProjectDir)\..\FFmpeg\libavformat\avformat.lib;$(ProjectDir)\..\FFmpeg\libswscale\swscale.lib;$(ProjectDir)\..\FFmpeg\libavfilter\avfilter.lib;$(ProjectDir)\..\FFmpeg\libswresample\swresample.lib;$(ProjectDir)\..\FFmpeg\libavdevice\avdevice.lib;$(ProjectDir)\..\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
