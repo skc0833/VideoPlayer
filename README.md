@@ -36,6 +36,9 @@ Host github.com-videoplayer
   IdentityFile ~/.ssh/skc0833_gmail
   IdentitiesOnly yes
 
+$ git remote set-url origin git@github.com-videoplayer:skc0833/VideoPlayer.git
+--> 이걸 안해주면 git@github.com: Permission denied (publickey). 에러
+
 $ git clone git@github.com:skc0833/VideoPlayer.git
 ```
 
