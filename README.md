@@ -16,7 +16,13 @@ $ ssh-keygen -t ed25519 -C "skc0833@gmail.com" -f ~/.ssh/skc0833_gmail
 
 // 생성된 키를 ssh-agent 에 등록
 $ eval "$(ssh-agent -s)"
-$ ssh-add ~/.ssh/skc0833_gmail
+$ ssh-add /c/Users/skc08/.ssh/skc0833_gmail
+-->
+unable to start ssh-agent service, error :1058 에러 발생시,
+Win + R → services.msc 입력 후, "OpenSSH Authentication Agent" 를 찾아 우클릭
+시작 유형을 "자동", 적용 버튼 클릭 수, 시작 클릭하고 재시도(ssh-agent 가 시작됨)
+참고로 ssh-add ~/.ssh/skc0833_gmail 는 못찾고 있다.
+
 $ ssh -T git@github.com -v
 -->
 debug1: Offering public key: /c/Users/skc08/.ssh/id_rsa RSA SHA256:BAxGoIwTAiz8IdkE31RPosGQQgL1AjOOBGL8pw2mDzk
