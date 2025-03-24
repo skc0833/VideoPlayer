@@ -121,8 +121,19 @@ $ make install
 
 ## MSVC Project 생성
 
-* <VideoPlayer_ROOT>\VideoPlayer\VideoPlayer.sln 를 오픈하면 빌드, 실행이 성공해야 함<br/>
+* <VideoPlayer_ROOT>\VideoPlayer\VideoPlayer.sln 를 오픈하면 빌드, 실행(F5)이 성공해야 함<br/>
 --> e.g, D:\VideoPlayer\VideoPlayer\VideoPlayer.sln
+
+* cmd 터미널에서 실행할 경우
+```
+1) PATH 환경변수를 설정하거나
+--> set PATH=D:\VideoPlayer\SDL2-2.32.2\lib\x64;D:\VideoPlayer\install\bin;%PATH%
+2) 또는 필요한 dll 파일들을 실행파일 위치에 복사한 후, 실행
+--> D:\VideoPlayer\SDL2-2.32.2\lib\x64\SDL2.dll, D:\VideoPlayer\install\bin\*.dll 을 실행파일 위치로 복사
+
+> cd D:\VideoPlayer\VideoPlayer\x64\Debug
+> VideoPlayer.exe D:\VideoPlayer\VideoPlayer\data\mov_bbb.mp4
+```
 
 * 이하는 MSVC Project 생성 및 설정 내용임
 
