@@ -69,7 +69,7 @@ yasm 1.3.0-3
 
 * SDL 의 releases 페이지에서 SDL2 버전 중, 최신버전을 다운로드<br/>
 (https://github.com/libsdl-org/SDL/releases/tag/release-2.32.2 에서 SDL2-devel-2.32.2-VC.zip 다운로드)<br/>
-이 파일을 받아야 include, lib 등의 파일이 포함돼 있음
+d:\VideoPlayer\SDL2-2.32.2 하위에 include, lib 등이 존재하게 압축해제
 
 ### 3. FFmpeg
 ```
@@ -95,6 +95,7 @@ $ git checkout release/7.1
 2) 다시 아래 명령어로 새로운 콘솔(msys)을 띄운다.<br/>
 ```
 $ <MSYS2_DIR>\msys2_shell.cmd -msys -use-full-path
+--> e.g, d:\msys64\msys2_shell.cmd -msys -use-full-path
 
 // 이렇게 실행된 MSYS 쉘에서 which cl, which link 시 MSVC 경로로 잡혔는지 확인
 $ which cl
@@ -104,11 +105,13 @@ $ which cl
 3) FFmpeg 빌드
 ```
 $ cd <FFmpeg_DIR>
+--> e.g, cd /d/VideoPlayer/FFmpeg/
 $ ./configure --prefix=../install --toolchain=msvc --arch=x86_64 --enable-yasm --disable-x86asm --enable-asm --enable-shared --enable-w32threads --disable-programs --disable-doc --disable-static
 --> 화면에 아무것도 표시 안되면서 한참 걸림(5분 이상)
 
 $ make -j 8     // 실패시 make clean 수행후 재실행
-$ make install  // 참고로 현재 install 된 위치는 사용하고 있지 않음
+$ make install
+--> <VideoPlayer_ROOT>\install\include 폴더에 libpostproc 등이 누락돼 있어 아래 프로젝트 속성에서 "추가 포함 디렉터리" 경로는 <FFmpeg_DIR> 하위로 직접 설정중임
 
 참고로 ./configure --help 로 전체 옵션 확인 가능함
 공식 가이드 내용은(https://trac.ffmpeg.org/wiki/CompilationGuide/MSVC)
@@ -117,6 +120,11 @@ $ make install  // 참고로 현재 install 된 위치는 사용하고 있지 �
 ```
 
 ## MSVC Project 생성
+
+* <VideoPlayer_ROOT>\VideoPlayer\VideoPlayer.sln 를 오픈하면 빌드, 실행이 성공해야 함<br/>
+--> e.g, D:\VideoPlayer\VideoPlayer\VideoPlayer.sln
+
+* 이하는 MSVC Project 생성 및 설정 내용임
 
 * VS2022 에서 C++ 콘솔앱 프로젝트 생성(빌드시 x64 로 선택)<br/>
 프로젝트 이름: VideoPlayer, 위치: <VideoPlayer_ROOT>\VideoPlayer (e.g, d:\VideoPlayer\VideoPlayer)<br/>
@@ -127,7 +135,7 @@ $ make install  // 참고로 현재 install 된 위치는 사용하고 있지 �
 * 프로젝트 속성 설정
 ```
 // 디버깅 / 환경
-PATH=$(ProjectDir)\..\SDL2-2.32.2\lib\x64;$(ProjectDir)\..\FFmpeg\libswresample;$(ProjectDir)\..\FFmpeg\libavfilter;$(ProjectDir)\..\FFmpeg\libswscale;$(ProjectDir)\..\FFmpeg\libavformat;$(ProjectDir)\..\FFmpeg\libavutil;$(ProjectDir)\..\FFmpeg\libavcodec;$(ProjectDir)\..\FFmpeg\libavdevice;$(ProjectDir)\..\FFmpeg\libpostproc;%PATH%
+PATH=$(ProjectDir)\..\SDL2-2.32.2\lib\x64;$(ProjectDir)\..\install\bin;%PATH%
 
 // C/C++ / 일반 / 추가 포함 디렉터리
 $(ProjectDir)\..\FFmpeg;$(ProjectDir)\..\FFmpeg\fftools;$(ProjectDir)\..\SDL2-2.32.2\include;$(ProjectDir);%(AdditionalIncludeDirectories)
@@ -136,4 +144,4 @@ $(ProjectDir)\..\FFmpeg;$(ProjectDir)\..\FFmpeg\fftools;$(ProjectDir)\..\SDL2-2.
 _CRT_SECURE_NO_WARNINGS 추가
 
 // 링커 / 입력 / 추가 종속성
-$(ProjectDir)\..\FFmpeg\libavcodec\avcodec.lib;$(ProjectDir)\..\FFmpeg\libavutil\avutil.lib;$(ProjectDir)\..\FFmpeg\libavformat\avformat.lib;$(ProjectDir)\..\FFmpeg\libswscale\swscale.lib;$(ProjectDir)\..\FFmpeg\libavfilter\avfilter.lib;$(ProjectDir)\..\FFmpeg\libswresample\swresample.lib;$(ProjectDir)\..\FFmpeg\libavdevice\avdevice.lib;$(ProjectDir)\..\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
+$(ProjectDir)\..\install\bin\avcodec.lib;$(ProjectDir)\..\install\bin\avutil.lib;$(ProjectDir)\..\install\bin\avformat.lib;$(ProjectDir)\..\install\bin\swscale.lib;$(ProjectDir)\..\install\bin\avfilter.lib;$(ProjectDir)\..\install\bin\swresample.lib;$(ProjectDir)\..\install\bin\avdevice.lib;$(ProjectDir)\..\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)
