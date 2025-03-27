@@ -9,6 +9,9 @@ MSYS2_DIR = d:\msys64
 FFmpeg_DIR = d:\VideoPlayer\FFmpeg
 ```
 
+<details>
+<summary>SSH-Key 생성 및 등록</summary>
+
 ```
 // git push 를 위해서는 최초에 SSH-Key 생성해서 등록 필요(Git Bash 쉘에서 실행)
 $ ssh-keygen -t ed25519 -C "skc0833@gmail.com" -f ~/.ssh/skc0833_gmail
@@ -16,7 +19,8 @@ $ ssh-keygen -t ed25519 -C "skc0833@gmail.com" -f ~/.ssh/skc0833_gmail
 
 // 생성된 키를 ssh-agent 에 등록
 $ eval "$(ssh-agent -s)"
-$ ssh-add /c/Users/skc08/.ssh/skc0833_gmail
+$ ssh-add /c/Users/skc0833/.ssh/skc0833_gmail
+또는 ssh-add /c/Users/skc08/.ssh/skc0833_gmail
 -->
 unable to start ssh-agent service, error :1058 에러 발생시,
 Win + R → services.msc 입력 후, "OpenSSH Authentication Agent" 를 찾아 우클릭
@@ -24,7 +28,7 @@ Win + R → services.msc 입력 후, "OpenSSH Authentication Agent" 를 찾아 �
 참고로 ssh-add ~/.ssh/skc0833_gmail 는 못찾고 있다.
 
 $ ssh -T git@github.com -v
--->
+--> SSH 연결 상태를 확인
 debug1: Offering public key: /c/Users/skc08/.ssh/id_rsa RSA SHA256:BAxGoIwTAiz8IdkE31RPosGQQgL1AjOOBGL8pw2mDzk
 id_rsa 이 아니라 아래와 같이 skc0833@gmail.com 가 출력돼야 함
 debug1: Offering public key: skc0833@gmail.com ED25519 SHA256:67budIIhdcNNGnrSFFYn2S6N1XmefKtzIrKPIt1b5Bw agent
@@ -38,7 +42,39 @@ Host github.com-videoplayer
 
 $ git remote set-url origin git@github.com-videoplayer:skc0833/VideoPlayer.git
 --> 이걸 안해주면 git@github.com: Permission denied (publickey). 에러
+```
+</details>
 
+<details>
+<summary>Git 설정</summary>
+
+```
+// Git 줄바꿈 설정 확인(Windows에서 true or input 으로 설정해야 ^M 표시가 사라짐)
+$ git config core.autocrlf
+$ git config --global core.autocrlf true
+-->
+true: 체크아웃 시 CRLF, 커밋 시 LF로 변환
+input: 체크아웃 시 CRLF를 쓰지 않고, 커밋 시 LF만 유지함
+false(default): 줄바꿈을 건드리지 않음
+
+$ git stash
+$ git stash list
+$ git stash pop 으로 적용
+--> pop: 마지막에 저장된 stash를 현재 작업 디렉토리에 적용 & 해당 stash 항목을 목록에서 제거
+git stash apply 는 pop 와 같지만 스태시 목록에서 제거하지 않음(시험삼아 적용해보고 나중에 제거용)
+$ git stash pop stash@{0} // 특정 stash 항목을 지정해서 적용
+
+$ git reset HEAD^
+--> 가장 최근 커밋을 되돌림(최근 커밋 내용이 unstage 상태로 워킹 디렉토리에 그대로 남음)
+$ git reset --hard HEAD^  // 커밋도 삭제하고 변경 내용도 삭제
+
+git push 시에 ERROR: Permission to skc0833/VideoPlayer.git denied to skc0833-cubox-ai. 발생시
+위에 생성된 키를 ssh-agent 에 등록, git remote set-url origin ~ 실행 후 재시도
+(ssh -T git@github.com -v 로 SSH 연결 상태 확인 필수)
+```
+</details>
+
+```
 $ git clone git@github.com:skc0833/VideoPlayer.git
 ```
 

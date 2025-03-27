@@ -109,7 +109,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(ProjectDir)\..\FFmpeg\libavcodec\avcodec.lib;$(ProjectDir)\..\FFmpeg\libavutil\avutil.lib;$(ProjectDir)\..\FFmpeg\libavformat\avformat.lib;$(ProjectDir)\..\FFmpeg\libswscale\swscale.lib;$(ProjectDir)\..\FFmpeg\libavfilter\avfilter.lib;$(ProjectDir)\..\FFmpeg\libswresample\swresample.lib;$(ProjectDir)\..\FFmpeg\libavdevice\avdevice.lib;$(ProjectDir)\..\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(ProjectDir)\..\install\bin\avcodec.lib;$(ProjectDir)\..\install\bin\avutil.lib;$(ProjectDir)\..\install\bin\avformat.lib;$(ProjectDir)\..\install\bin\swscale.lib;$(ProjectDir)\..\install\bin\avfilter.lib;$(ProjectDir)\..\install\bin\swresample.lib;$(ProjectDir)\..\install\bin\avdevice.lib;$(ProjectDir)\..\SDL2-2.32.2\lib\x64\SDL2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
