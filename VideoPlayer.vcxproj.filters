@@ -16,11 +16,11 @@
     <Filter Include="소스 파일\demo">
       <UniqueIdentifier>{3a5dd96b-6ece-4b5b-b510-e55ac5f96579}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\examples">
+      <UniqueIdentifier>{ff07f07c-e4fd-4437-82d4-191a9e7c4a3e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="demo\ffplay.c">
-      <Filter>소스 파일\demo</Filter>
-    </ClCompile>
     <ClCompile Include="..\FFmpeg\fftools\cmdutils.c">
       <Filter>소스 파일\demo</Filter>
     </ClCompile>
@@ -31,6 +31,12 @@
       <Filter>소스 파일\demo</Filter>
     </ClCompile>
     <ClCompile Include="..\FFmpeg\fftools\ffplay_renderer.c">
+      <Filter>소스 파일\demo</Filter>
+    </ClCompile>
+    <ClCompile Include="examples\01_video.c">
+      <Filter>소스 파일\examples</Filter>
+    </ClCompile>
+    <ClCompile Include="demo\ffplay.c">
       <Filter>소스 파일\demo</Filter>
     </ClCompile>
   </ItemGroup>
