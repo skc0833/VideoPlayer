@@ -21,6 +21,9 @@
   <ItemGroup>
     <ClCompile Include="examples\01_video.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\Perf.h" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>

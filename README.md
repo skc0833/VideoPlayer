@@ -125,7 +125,7 @@ $ git checkout release/7.1
 (그래야 MSYS에서 gcc 를 실행할때 비주얼스튜디오의 컴파일러와 링커를 찾을 수 있게 됨)
 
 1) 윈도우 시작메뉴에서 “x64 Native Tools Command Prompt for VS 2022” 를 실행<br/>
-2019 버전에서는 아래 ./configure 시에 Compiler lacks C11 support 에러가 발생하고 있음<br/>
+~~2019 버전에서는 아래 ./configure 시에 Compiler lacks C11 support 에러가 발생하고 있음~~<br/>
 2022 버전에서는 ./configure: line 1774: cmp: command not found 에러가 표시되지만 configure는 성공하는 듯함<br/>
 
 2) 다시 아래 명령어로 새로운 콘솔(msys)을 띄운다.<br/>
@@ -142,18 +142,58 @@ $ which cl
 ```
 $ cd <FFmpeg_DIR>
 --> e.g, cd /d/VideoPlayer/FFmpeg/
-$ ./configure --prefix=../install --toolchain=msvc --arch=x86_64 --enable-yasm --disable-x86asm --enable-asm --enable-shared --enable-w32threads --disable-programs --disable-doc --disable-static
+
+$ export PKG_CONFIG_PATH=/d/msys64/usr/local/lib/pkgconfig
+$ ./configure --prefix=../install --toolchain=msvc --arch=x86_64 --enable-x86asm --enable-asm --enable-shared --enable-w32threads --disable-programs --disable-doc --disable-static --enable-ffmpeg --enable-ffplay --enable-ffprobe
+
 --> 화면에 아무것도 표시 안되면서 한참 걸림(5분 이상)
 
 $ make -j 8     // 실패시 make clean 수행후 재실행
 $ make install
 --> <VideoPlayer_ROOT>\install\include 폴더에 libpostproc 등이 누락돼 있어 아래 프로젝트 속성에서 "추가 포함 디렉터리" 경로는 <FFmpeg_DIR> 하위로 직접 설정중임
-
-참고로 ./configure --help 로 전체 옵션 확인 가능함
-공식 가이드 내용은(https://trac.ffmpeg.org/wiki/CompilationGuide/MSVC)
-./configure --enable-asm --enable-yasm --arch=i386 --disable-ffserver --disable-avdevice --disable-swscale --disable-doc --disable-ffplay --disable-ffprobe --disable-ffmpeg --enable-shared --disable-static --disable-bzlib --disable-libopenjpeg --disable-iconv --disable-zlib --prefix=/c/ffmpeg --toolchain=msvc
---> 적용시에는 이 명령어에서 --disable-ffplay 제거, --enable-w32threads 추가가 필요해보임!
 ```
+
+<details>
+<summary>[참고용] 공식 가이드 내용</summary>
+
+~~공식 가이드 내용은(https://trac.ffmpeg.org/wiki/CompilationGuide/MSVC)
+./configure --enable-asm --enable-yasm --arch=i386 --disable-ffserver --disable-avdevice --disable-swscale --disable-doc --disable-ffplay --disable-ffprobe --disable-ffmpeg --enable-shared --disable-static --disable-bzlib --disable-libopenjpeg --disable-iconv --disable-zlib --prefix=/c/ffmpeg --toolchain=msvc
+--> 적용시에는 이 명령어에서 --disable-ffplay 제거, --enable-w32threads 추가가 필요해보임!~~
+</details>
+
+<details>
+<summary>[참고용] FFmepg 명령어</summary>
+
+```
+// 구간 잘라내기 명령어
+$ ffmpeg.exe -i mov_bbb.mp4 -t 00:00:02 -c copy mov_bbb_2s.mp4
+$ ffmpeg.exe -i mov_bbb.mp4 -ss 00:00:00 -t 00:00:02 -c copy mov_bbb_2s.mp4
+--> -ss 00:00:00 옵션이 있으면 검은색만 출력되고 있음(TODO: libx264 로 인코딩 필요???)
+
+$ ffmpeg.exe -i mov_bbb.mp4 -ss 00:00:00 -t 00:00:02 -c:v libx264 -c:a aac mov_bbb_2s.mp4
+--> Unknown encoder 'libx264' 에러 -> libx264 빌드가 필요하지만 현재 빌드 에러 해결이 안되고 있음
+```
+</details>
+
+<details>
+<summary>[참고용] libx264 빌드(TODO)</summary>
+
+```
+// libx264 빌드시 에러(TODO)
+$ git clone https://code.videolan.org/videolan/x264.git
+$ cd x264
+$ ./configure --enable-shared --disable-cli --disable-asm --disable-thread --host=x86_64-w64-mingw32
+$ make -j16
+
+// 위에서 FFmpeg configure 시에 아래 에러 발생 중
+$ export PKG_CONFIG_PATH=/d/msys64/usr/local/lib/pkgconfig // 소용없는듯
+$ export PKG_CONFIG=false // 소용없는듯
+$ ./configure ~ --enable-gpl --enable-libx264 --extra-cflags="-I/d/msys64/usr/local/include" --extra-ldflags="-L/d/msys64/usr/local/lib" --pkgconfigdir=/d/msys64/usr/local/lib/pkgconfig
+ 옵션 추가시
+--> ERROR: x264 not found using pkg-config -> TODO: 해결책 못 찾음
+```
+</details>
+
 
 ## MSVC Project 생성
 

@@ -8,26 +8,17 @@ extern "C" {
 #include "SDL.h"
 }
 
+#include "../include/Perf.h"
+
 #ifdef _WIN32
 #undef main // SDL.h 에서 #define main SDL_main 부분 복구
 #endif
 
-#if 1
-#define PERF_START()                \
-        static int __cnt; __cnt++;         \
-        int64_t __start_ts = av_gettime_relative(); \
-        int64_t __check_ts = __start_ts; int64_t __cur_ts = __start_ts;
-#define PERF_ELAPSED(tag, from_start)   \
-        __cur_ts = av_gettime_relative();   \
-        if (from_start) \
-            av_log(NULL, AV_LOG_INFO, "[%4d] %" PRId64 " %6d (us) %s\n\n", __cnt, __cur_ts % (10 * 1000 * 1000), __cur_ts - __start_ts, tag); \
-        else \
-            av_log(NULL, AV_LOG_INFO, "[%4d] %lld %6d (us) %s\n", __cnt, __cur_ts % (10 * 1000 * 1000), __cur_ts - __check_ts, tag); \
-        __check_ts = __cur_ts;
-#else
-#define PERF_START()
-#define PERF_ELAPSED(tag, from_start)
-#endif
+#define PERF_CHECK_INVERVAL_MS     200
+#define PERF_CATEGORY   "cu_video"
+#define PERF_INIT()      cu::Perf::PERF_INIT(10 * 2);
+#define PERF_START(name) cu::Perf::PERF_START(PERF_CATEGORY, name)
+#define PERF_END(name)   cu::Perf::PERF_END(PERF_CATEGORY, name)
 
 static inline void print_error(const char* msg, int err)
 {
@@ -44,6 +35,8 @@ static inline void print_error(const char* msg, int err)
 }
 
 int main(int argc, char* argv[]) {
+    PERF_INIT();
+    PERF_START("Init");
     if (argc < 2) {
         printf("Usage: %s <video_file>\n", argv[0]);
         return -1;
@@ -59,6 +52,7 @@ int main(int argc, char* argv[]) {
     }
 
     // 입력 파일의 스트림 정보를 파싱하고 채운다(start_time, duration, bit_rate 등).
+    // start_time = 0, duration = 10026667 / 2080000, bit_rate = 629116 / 746423
     err = avformat_find_stream_info(fmt_ctx, NULL);
     if (err < 0) {
         print_error("avformat_find_stream_info()", err);
@@ -74,6 +68,11 @@ int main(int argc, char* argv[]) {
     // av_find_best_stream() 호출 시 내부적으로 avcodec_find_decoder() 가 자동 호출됨
     const AVCodec* codec = NULL;
     int video_stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+
+    AVStream* stream = fmt_ctx->streams[video_stream_index];
+    AVRational fr = stream->avg_frame_rate;
+    double fps = av_q2d(fr);
+    av_log(NULL, AV_LOG_INFO, "fps = %.f\n", fps);
 
     // 코덱 컨텍스트(AVCodecContext)를 동적으로 생성하고 초기화
     AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
@@ -123,11 +122,15 @@ int main(int argc, char* argv[]) {
     SDL_Texture* texture = SDL_CreateTexture(renderer, sdl_pix_fmt, SDL_TEXTUREACCESS_STREAMING,
         codec_ctx->width, codec_ctx->height);
 
+    PERF_END("Init");
+
     // 디코딩 루프
+    PERF_START("Loop");
+    auto started = std::chrono::high_resolution_clock::now();
     while (true) { // 1190 loop
-        PERF_START();
+        PERF_START("Render");
+        auto loop_start_time = std::chrono::high_resolution_clock::now();
         int err = av_read_frame(fmt_ctx, pkt);  // Return the next frame of a stream
-        //PERF_ELAPSED("av_read_frame", false); // 0us
         if (err < 0) break;
 
         bool quit = false;
@@ -141,11 +144,9 @@ int main(int argc, char* argv[]) {
         }
         if (quit) break;
         if (pkt->stream_index == video_stream_index) {
-            PERF_ELAPSED("avcodec_send_packet before", false);
             // Supply raw packet data as input to a decoder
             // AVERROR(EAGAIN) 를 리턴하면 디코더 입력큐가 꽉 찾으므로 avcodec_receive_frame() 를 호출해줘야함
             avcodec_send_packet(codec_ctx, pkt); // 비디오 프레임 디코딩
-            PERF_ELAPSED("avcodec_send_packet", false);
 
             // AVERROR(EAGAIN) 를 리턴하면 디코더 출력큐가 비었으므로 avcodec_send_packet() 를 호출해줘야함
             int frameFinished = avcodec_receive_frame(codec_ctx, frame); // 0us
@@ -154,34 +155,49 @@ int main(int argc, char* argv[]) {
                 sws_scale(sws_ctx, frame->data, frame->linesize,
                     0/*srcSliceY*/, codec_ctx->height/*srcSliceH*/,
                     frame_rgb->data, frame_rgb->linesize);
-                //PERF_ELAPSED("sws_scale", false);
 
                 // AV_PIX_FMT_RGB24 가 packed 포맷(메모리상에 연속으로 저장)이므로 
                 // frame_rgb->data[0] 만 채워졌으며, frame_rgb->data[0] 만 출력하면 됨
                 // CPU 메모리의 픽셀 데이터를 텍스처에 복사 (GPU 메모리로 업로드)
                 SDL_UpdateTexture(texture, NULL/*rect*/, frame_rgb->data[0], frame_rgb->linesize[0]);
-                //PERF_ELAPSED("SDL_UpdateTexture", false);
 
                 // 크기가 작거나 알파가 있으면 이전 프레임 흔적이 남을 수 있으므로 호출필요(보통 검정색)
                 SDL_RenderClear(renderer);
-                //PERF_ELAPSED("SDL_RenderClear", false);
 
                 SDL_RenderCopy(renderer, texture, NULL/*srcrect*/, NULL/*dstrect*/);
-                PERF_ELAPSED("SDL_RenderCopy", false);
 
                 // 화면 갱신(더블 버퍼 스왑)
                 SDL_RenderPresent(renderer);
-                PERF_ELAPSED("SDL_RenderPresent", false);
 
-                SDL_Delay(33); // 간단한 30fps 타이머 (정밀하지 않음)
+                PERF_END("Render"); // ~3ms
+
+                auto elapsed = std::chrono::high_resolution_clock::now() - started;
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+                if (elapsed_ms >= PERF_CHECK_INVERVAL_MS) {
+                    started = std::chrono::high_resolution_clock::now();
+                    std::string str = cu::Perf::PERF_GET_STRING(PERF_CATEGORY, { "Render" }, "");
+                    static int cnt = 0;
+                    av_log(NULL, AV_LOG_INFO, "[%4d] %s\n", ++cnt, str.c_str());
+                }
+
+                auto loop_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::high_resolution_clock::now() - loop_start_time).count();
+                double sleep_ms = 1000 / fps - loop_elapsed_time;
+                //av_log(NULL, AV_LOG_INFO, "sleep %.fms (loop_elapsed_time %lldms)\n", sleep_ms, loop_elapsed_time);
+                if (sleep_ms > 0) {
+                    SDL_Delay(sleep_ms); // 1000 / 25 = 40ms
+                }
             } else {
                 // ret(frameFinished) = -11
                 av_log(NULL, AV_LOG_ERROR, "[%d] avcodec_receive_frame() ret=%d\n", pkt->stream_index, frameFinished);
             }
         }
         av_packet_unref(pkt);
-        PERF_ELAPSED("Loop", true);
     }
+    PERF_END("Loop");
+
+    std::string str = cu::Perf::PERF_GET_STRING(PERF_CATEGORY, { "Init", "Loop" }, "Total -> ");
+    av_log(NULL, AV_LOG_INFO, "%s\n", str.c_str());
 
     av_frame_free(&frame);
     av_frame_free(&frame_rgb);
