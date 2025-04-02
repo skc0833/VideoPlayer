@@ -21,7 +21,7 @@ extern "C" {
 #define PERF_END(name)   cu::Perf::PERF_END(PERF_CATEGORY, name)
 
 
-int main(int argc, char* argv[]) {
+int main01(int argc, char* argv[]) {
     PERF_INIT();
     PERF_START("Init");
     if (argc < 2) {

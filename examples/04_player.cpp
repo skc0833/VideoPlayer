@@ -1,15 +1,29 @@
+// FFmpeg release/7.1 + SDL2 기반 C++ 오디오/비디오 동기화 재생 샘플
 extern "C" {
-#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 #include <libavutil/opt.h>
+#include <libavutil/time.h>
 #include <SDL.h>
 }
+
+#include <iostream>
+#include <thread>
+#include <chrono>
+
 #include "../include/common.h"
 
 #ifdef _WIN32
 #undef main // SDL.h 에서 #define main SDL_main 부분 복구
 #endif
+
+// TODO: 
+// 1) 간혹 후반부에 윈도우 타이틀바에 응답없음 표시되며 화면이 멈추는 증상
+//    창 전환(Alt + Tap)시에 거의 항상 발생하고 있음
+//    (오디오 재생은 끝까지 정상 완료되고 있음)
+// 2) 마지막 사과 떨어질때 오디오 1초 이상 느림
 
 #define SDL_AUDIO_BUFFER_SIZE 1024
 #define MAX_AUDIO_FRAME_SIZE 192000
@@ -31,7 +45,7 @@ static void packet_queue_init(PacketQueue* q) {
     q->cond = SDL_CreateCond();
 }
 
-static int packet_queue_put(PacketQueue* q, AVPacket* pkt) {
+int packet_queue_put(PacketQueue* q, AVPacket* pkt) {
     AVPacketList* pkt1;
 
     pkt1 = (AVPacketList*)av_malloc(sizeof(AVPacketList));
@@ -57,7 +71,7 @@ static int packet_queue_put(PacketQueue* q, AVPacket* pkt) {
     return 0;
 }
 
-static int packet_queue_get(PacketQueue* q, AVPacket* pkt, int block) {
+int packet_queue_get(PacketQueue* q, AVPacket* pkt, int block) {
     AVPacketList* pkt1;
     int ret;
 
@@ -96,7 +110,7 @@ static int packet_queue_get(PacketQueue* q, AVPacket* pkt, int block) {
     return ret;
 }
 
-static int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_buf, int buf_size) {
+int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_buf, int buf_size) {
     static AVPacket pkt;
     static AVFrame* frame = NULL;
     static SwrContext* swr_ctx = NULL;
@@ -111,7 +125,8 @@ static int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_bu
 #if 1 //skc
         swr_ctx = swr_alloc();
         int err = swr_alloc_set_opts2(&swr_ctx,
-            &audio_codec_ctx->ch_layout, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate/*skc 44100 도 재생됨(실제값 48000)*/,
+            &audio_codec_ctx->ch_layout, AV_SAMPLE_FMT_S16, 
+            audio_codec_ctx->sample_rate/*skc 44100 도 재생됨(실제값 48000)*/,
             &audio_codec_ctx->ch_layout, audio_codec_ctx->sample_fmt/*AV_SAMPLE_FMT_FLTP(8)*/,
             audio_codec_ctx->sample_rate,
             0, NULL);
@@ -141,13 +156,14 @@ static int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_bu
         if (ret < 0)
             return -1;
 
-        int dst_nb_samples = av_rescale_rnd(frame->nb_samples,
+        int dst_nb_samples = av_rescale_rnd(frame->nb_samples/*1024*/,
             audio_codec_ctx->sample_rate/*skc 44100 도 재생됨(실제값 48000)*/,
             audio_codec_ctx->sample_rate,
             AV_ROUND_UP);
 
         uint8_t* out_buffer = audio_buf;
 
+        // out_samples = 1024
         int out_samples = swr_convert(swr_ctx,
             &out_buffer,
             dst_nb_samples,
@@ -157,11 +173,9 @@ static int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_bu
         if (out_samples < 0)
             return -1;
 
+        // out_buffer_size = 4096
         int out_buffer_size = av_samples_get_buffer_size(NULL,
-            2,
-            out_samples,
-            AV_SAMPLE_FMT_S16,
-            1);
+            2, out_samples, AV_SAMPLE_FMT_S16, 1);
 
         av_packet_unref(&pkt);
         return out_buffer_size;
@@ -202,143 +216,129 @@ static void audio_callback(void* userdata, Uint8* stream, int len) {
     av_log(NULL, AV_LOG_INFO, "\n");
 }
 
-int main02(int argc, char* argv[]) {
+int main(int argc, char* argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "사용법: %s <오디오_파일>\n", argv[0]);
+        std::cout << "Usage: " << argv[0] << " <file>\n";
         return -1;
     }
 
-    // SDL 초기화
-    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
-        fprintf(stderr, "SDL 초기화 오류: %s\n", SDL_GetError());
-        return -1;
-    }
-
-    // FFmpeg 등록
+    const char* filename = argv[1];
     avformat_network_init();
 
-    AVFormatContext* format_ctx = NULL;
-    if (avformat_open_input(&format_ctx, argv[1], NULL, NULL) != 0) {
-        fprintf(stderr, "파일을 열 수 없습니다: %s\n", argv[1]);
+    AVFormatContext* fmt_ctx = nullptr;
+    if (avformat_open_input(&fmt_ctx, filename, nullptr, nullptr) != 0) {
+        std::cerr << "Could not open file." << std::endl;
         return -1;
     }
 
-    if (avformat_find_stream_info(format_ctx, NULL) < 0) {
-        fprintf(stderr, "스트림 정보를 찾을 수 없습니다\n");
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        std::cerr << "Failed to get stream info." << std::endl;
         return -1;
     }
 
-    // 오디오 스트림 찾기
-    int audio_stream_idx = -1;
-    for (int i = 0; i < format_ctx->nb_streams; i++) {
-        if (format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            audio_stream_idx = i;
-            break;
-        }
+    int videoStream = -1, audioStream = -1;
+    for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
+        if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && videoStream < 0)
+            videoStream = i;
+        if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audioStream < 0)
+            audioStream = i;
     }
 
-    if (audio_stream_idx == -1) {
-        fprintf(stderr, "오디오 스트림을 찾을 수 없습니다\n");
+    if (videoStream == -1 || audioStream == -1) {
+        std::cerr << "Missing video or audio stream." << std::endl;
         return -1;
     }
 
-    // 코덱 가져오기
-    const AVCodec* codec = avcodec_find_decoder(format_ctx->streams[audio_stream_idx]->codecpar->codec_id);
-    if (!codec) {
-        fprintf(stderr, "코덱을 찾을 수 없습니다\n");
-        return -1;
-    }
+    // 비디오 디코더 초기화
+    AVCodecParameters* vCodecPar = fmt_ctx->streams[videoStream]->codecpar;
+    const AVCodec* vCodec = avcodec_find_decoder(vCodecPar->codec_id);
+    AVCodecContext* vCodecCtx = avcodec_alloc_context3(vCodec);
+    avcodec_parameters_to_context(vCodecCtx, vCodecPar);
+    avcodec_open2(vCodecCtx, vCodec, nullptr);
 
-    // 코덱 컨텍스트 생성
-    AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
-    if (!codec_ctx) {
-        fprintf(stderr, "코덱 컨텍스트를 할당할 수 없습니다\n");
-        return -1;
-    }
-
-    if (avcodec_parameters_to_context(codec_ctx, format_ctx->streams[audio_stream_idx]->codecpar) < 0) {
-        fprintf(stderr, "코덱 파라미터를 설정할 수 없습니다\n");
-        return -1;
-    }
-
-    // 코덱 열기
-    if (avcodec_open2(codec_ctx, codec, NULL) < 0) {
-        fprintf(stderr, "코덱을 열 수 없습니다\n");
-        return -1;
-    }
+    // 오디오 디코더 초기화
+    AVCodecParameters* aCodecPar = fmt_ctx->streams[audioStream]->codecpar;
+    const AVCodec* aCodec = avcodec_find_decoder(aCodecPar->codec_id);
+    AVCodecContext* aCodecCtx = avcodec_alloc_context3(aCodec);
+    avcodec_parameters_to_context(aCodecCtx, aCodecPar);
+    avcodec_open2(aCodecCtx, aCodec, nullptr);
 
     // 패킷 큐 초기화
     packet_queue_init(&audioq);
 
-    // SDL 오디오 설정
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
+    SDL_Window* window = SDL_CreateWindow("A/V Sync Sample", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        vCodecCtx->width, vCodecCtx->height, SDL_WINDOW_SHOWN);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12,
+        SDL_TEXTUREACCESS_STREAMING, vCodecCtx->width, vCodecCtx->height);
+
+    SwsContext* sws_ctx = sws_getContext(vCodecCtx->width, vCodecCtx->height, vCodecCtx->pix_fmt,
+        vCodecCtx->width, vCodecCtx->height, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+
     SDL_AudioSpec wanted_spec, spec;
-    wanted_spec.freq = codec_ctx->sample_rate;  // 48000
-    wanted_spec.format = AUDIO_S16SYS;          // 32784
-    wanted_spec.channels = 2;
+    wanted_spec.freq = aCodecCtx->sample_rate;
+    wanted_spec.format = AUDIO_S16SYS;
+    wanted_spec.channels = 2; //skc aCodecCtx->channels;
     wanted_spec.silence = 0;
-    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE; //skc 1024,ffplay set 2048
+    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
     wanted_spec.callback = audio_callback;
-    wanted_spec.userdata = codec_ctx;
+    wanted_spec.userdata = aCodecCtx;
 
-#if 1 //skc SDL_OpenAudio() 는 무음으로 재생되고 있음(레거시 함수)
     SDL_AudioDeviceID audio_dev;
-    // spec.size = samples(1024) * AUDIO_S16SYS(2) * channels(2) = 4096
     if (!(audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, 0))) {
-        fprintf(stderr, "SDL 오디오를 열 수 없습니다: %s\n", SDL_GetError());
+        std::cerr << "Failed to open audio." << std::endl;
         return -1;
     }
-    // 오디오 재생 시작
     SDL_PauseAudioDevice(audio_dev, 0);
+
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+
+    while (av_read_frame(fmt_ctx, packet) >= 0) {
+        if (packet->stream_index == videoStream) {
+            avcodec_send_packet(vCodecCtx, packet);
+            while (avcodec_receive_frame(vCodecCtx, frame) == 0) {
+                SDL_UpdateYUVTexture(texture, nullptr,
+                    frame->data[0], frame->linesize[0],
+                    frame->data[1], frame->linesize[1],
+                    frame->data[2], frame->linesize[2]);
+                SDL_RenderClear(renderer);
+                SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+                SDL_RenderPresent(renderer);
+                SDL_Delay(33); // 간단한 프레임 딜레이 (30fps 기준)
+            }
+            av_packet_unref(packet);
+        }
+        else if (packet->stream_index == audioStream) {
+#if 1
+            // 큐를 사용하지 않으면 사운드가 늘어져서 재생되고 있다.
+            packet_queue_put(&audioq, packet);
 #else
-    if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
-        fprintf(stderr, "SDL 오디오를 열 수 없습니다: %s\n", SDL_GetError());
-        return -1;
-    }
-    // 오디오 재생 시작
-    SDL_PauseAudio(0);
+            if (avcodec_send_packet(aCodecCtx, packet) < 0) {
+                continue;
+            }
+            int err = avcodec_receive_frame(aCodecCtx, audio_frame);
+            if (err == AVERROR(EAGAIN) || err == AVERROR_EOF) {
+                continue;
+            }
 #endif
-
-    // SDL_QUIT 이벤트(윈도우 종료시 발생) 입력을 받기 위해 추가함
-    SDL_Window* window = SDL_CreateWindow("Simple AudioPlayer",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 640, 480, SDL_WINDOW_SHOWN);
-
-    // 패킷 읽기 및 큐에 넣기
-    AVPacket packet;
-    while (av_read_frame(format_ctx, &packet) >= 0) {
-        if (packet.stream_index == audio_stream_idx) {
-            packet_queue_put(&audioq, &packet);
         }
-        else {
-            av_packet_unref(&packet);
-        }
-
-        SDL_Event event;
-        SDL_PollEvent(&event);
-        if (event.type == SDL_QUIT) {
-            quit = 1;
-            break;
-        }
-    }
-
-    // 종료할 때까지 대기
-    while (!quit) {
-        SDL_Delay(100);
-
-        SDL_Event event;
-        SDL_PollEvent(&event);
-        if (event.type == SDL_QUIT ||
-            event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
-            quit = 1;
-        }
+        //av_packet_unref(packet);
     }
 
     // 정리
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    sws_freeContext(sws_ctx);
     SDL_CloseAudioDevice(audio_dev);
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&format_ctx);
+    avcodec_free_context(&aCodecCtx);
+    avcodec_free_context(&vCodecCtx);
+    avformat_close_input(&fmt_ctx);
 
     return 0;
 }
