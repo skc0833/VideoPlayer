@@ -108,17 +108,21 @@ int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_buf, int 
     }
 
     if (!swr_ctx) {
+#if 1 //skc
         swr_ctx = swr_alloc();
-
-        AVChannelLayout in_ch_layout, out_ch_layout;
-        av_channel_layout_default(&in_ch_layout, audio_codec_ctx->ch_layout.nb_channels);
-        av_channel_layout_default(&out_ch_layout, audio_codec_ctx->ch_layout.nb_channels);
-
         int err = swr_alloc_set_opts2(&swr_ctx,
-            &out_ch_layout, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate/*skc 44100 도 재생됨(실제값 48000)*/,
-            &in_ch_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
+            &audio_codec_ctx->ch_layout, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate/*skc 44100 도 재생됨(실제값 48000)*/,
+            &audio_codec_ctx->ch_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
             0, NULL);
         swr_init(swr_ctx);
+#else
+        swr_ctx = swr_alloc();
+        swr_ctx = swr_alloc_set_opts(NULL,
+            AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, 44100,
+            audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
+            0, NULL);
+        swr_init(swr_ctx);
+#endif
     }
 
     for (;;) {
@@ -275,9 +279,8 @@ int main(int argc, char* argv[]) {
     wanted_spec.callback = audio_callback;
     wanted_spec.userdata = codec_ctx;
 
-#if 1 //skc SDL_OpenAudio 는 무음으로 재생되고 있음
+#if 1 //skc SDL_OpenAudio() 는 무음으로 재생되고 있음(레거시 함수)
     SDL_AudioDeviceID audio_dev;
-    // allowed_changes = SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE
     // spec.size = samples(1024) * AUDIO_S16SYS(2) * channels(2) = 4096
     if (!(audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, 0))) {
         fprintf(stderr, "SDL 오디오를 열 수 없습니다: %s\n", SDL_GetError());
@@ -293,6 +296,10 @@ int main(int argc, char* argv[]) {
     // 오디오 재생 시작
     SDL_PauseAudio(0);
 #endif
+
+    // SDL_QUIT 이벤트(윈도우 종료시 발생) 입력을 받기 위해 추가함
+    SDL_Window* window = SDL_CreateWindow("Simple AudioPlayer",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 640, 480, SDL_WINDOW_SHOWN);
 
     // 패킷 읽기 및 큐에 넣기
     AVPacket packet;
@@ -318,13 +325,15 @@ int main(int argc, char* argv[]) {
 
         SDL_Event event;
         SDL_PollEvent(&event);
-        if (event.type == SDL_QUIT) {
+        if (event.type == SDL_QUIT ||
+            event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
             quit = 1;
         }
     }
 
     // 정리
-    SDL_CloseAudio();
+    SDL_CloseAudioDevice(audio_dev);
+    SDL_DestroyWindow(window);
     SDL_Quit();
 
     avcodec_free_context(&codec_ctx);
@@ -332,171 +341,3 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-
-#if 0
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libswresample/swresample.h>
-#include <SDL.h>
-}
-
-#include <iostream>
-#include "../include/common.h"
-
-#ifdef _WIN32
-#undef main // SDL.h 에서 #define main SDL_main 부분 복구
-#endif
-
-#define AUDIO_BUFFER_SIZE 192000
-
-static uint8_t audio_buf[AUDIO_BUFFER_SIZE];
-static unsigned int audio_buf_size = 0;
-static unsigned int audio_buf_index = 0;
-
-static AVCodecContext* codec_ctx = nullptr;
-static SwrContext* swr_ctx = nullptr;
-static AVFrame* frame = nullptr;
-
-void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
-    while (len > 0) {
-        if (audio_buf_index >= audio_buf_size) {
-            // 버퍼에 더 이상 데이터 없음
-            int ret = avcodec_receive_frame(codec_ctx, frame);
-            if (ret == AVERROR(EAGAIN)) {
-                break;
-            }
-
-#if 1
-            if (frame->nb_samples > 0 && frame->data[0]) {
-                const uint8_t** in = (const uint8_t**)frame->extended_data;
-
-                int out_count = (int64_t)frame->nb_samples * 48000 / codec_ctx->sample_rate + 256;
-                int out_size = av_samples_get_buffer_size(NULL, codec_ctx->ch_layout.nb_channels, out_count, AV_SAMPLE_FMT_S16, 1);
-
-                uint8_t* audio_buf1;
-                //int out_count = (int64_t)frame->nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
-                //int out_size = av_samples_get_buffer_size(NULL, codec_ctx->ch_layout.nb_channels, 1, AV_SAMPLE_FMT_S16, 1);
-                unsigned int audio_buf1_size = out_size;
-                av_fast_malloc(&audio_buf1, &audio_buf1_size, out_size); // TODO
-                //len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples);
-                uint8_t** out = &audio_buf1;
-                audio_buf_size = swr_convert(swr_ctx, out, out_count, (const uint8_t**)frame->data, frame->nb_samples);
-            }
-#else
-            audio_buf_size = swr_convert(swr_ctx, (uint8_t* const*)(&audio_buf), AUDIO_BUFFER_SIZE,
-                (const uint8_t**)frame->data, frame->nb_samples);
-#endif
-
-            audio_buf_size *= av_get_bytes_per_sample(AV_SAMPLE_FMT_S16) * codec_ctx->ch_layout.nb_channels;
-            audio_buf_index = 0;
-        }
-
-        int to_copy = audio_buf_size - audio_buf_index;
-        if (to_copy > len) to_copy = len;
-
-        SDL_memcpy(stream, audio_buf + audio_buf_index, to_copy);
-        len -= to_copy;
-        stream += to_copy;
-        audio_buf_index += to_copy;
-    }
-}
-
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cout << "Usage: audio_player <audio_file>\n";
-        return -1;
-    }
-
-    const char* filename = argv[1];
-
-    //av_register_all();
-    avformat_network_init();
-
-    AVFormatContext* fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, filename, nullptr, nullptr) < 0) {
-        std::cerr << "Cannot open input file\n";
-        return -1;
-    }
-
-    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        std::cerr << "Cannot find stream info\n";
-        return -1;
-    }
-
-    int audio_stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-    if (audio_stream_index < 0) {
-        std::cerr << "No audio stream found\n";
-        return -1;
-    }
-
-    AVStream* audio_stream = fmt_ctx->streams[audio_stream_index];
-    AVCodecParameters* codecpar = audio_stream->codecpar;
-    const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
-
-    codec_ctx = avcodec_alloc_context3(codec);
-    avcodec_parameters_to_context(codec_ctx, codecpar);
-    avcodec_open2(codec_ctx, codec, nullptr);
-
-    frame = av_frame_alloc();
-    AVPacket* packet = av_packet_alloc();
-
-    // Resampler
-    AVChannelLayout in_ch_layout, out_ch_layout;
-    av_channel_layout_default(&in_ch_layout, codec_ctx->ch_layout.nb_channels);
-    av_channel_layout_default(&out_ch_layout, codec_ctx->ch_layout.nb_channels);
-    int err = swr_alloc_set_opts2(&swr_ctx,
-        &out_ch_layout,
-        AV_SAMPLE_FMT_S16,
-        codec_ctx->sample_rate,
-        &in_ch_layout,
-        codec_ctx->sample_fmt,
-        codec_ctx->sample_rate,
-        0, nullptr);
-    if (err < 0) {
-        print_error("swr_alloc_set_opts2()", err);
-    }
-    err = swr_init(swr_ctx);
-    if (err < 0) {
-        print_error("swr_init()", err);
-    }
-
-    // SDL 초기화
-    SDL_Init(SDL_INIT_AUDIO);
-    SDL_AudioSpec wanted_spec;
-    wanted_spec.freq = codec_ctx->sample_rate;
-    wanted_spec.format = AUDIO_S16SYS;
-    wanted_spec.channels = codec_ctx->ch_layout.nb_channels;
-    wanted_spec.silence = 0;
-    wanted_spec.samples = 1024;
-    wanted_spec.callback = sdl_audio_callback;
-    wanted_spec.userdata = nullptr;
-
-    if (SDL_OpenAudio(&wanted_spec, nullptr) < 0) {
-        std::cerr << "SDL_OpenAudio error\n";
-        return -1;
-    }
-
-    SDL_PauseAudio(0); // 오디오 재생 시작
-
-    while (av_read_frame(fmt_ctx, packet) >= 0) {
-        if (packet->stream_index == audio_stream_index) {
-            avcodec_send_packet(codec_ctx, packet);
-            SDL_Delay(10); // 잠시 대기하여 버퍼를 채우게 함
-        }
-        av_packet_unref(packet);
-    }
-
-    SDL_Delay(3000); // 마지막 버퍼 재생 대기
-    SDL_CloseAudio();
-    SDL_Quit();
-
-    av_frame_free(&frame);
-    av_packet_free(&packet);
-    avcodec_free_context(&codec_ctx);
-    swr_free(&swr_ctx);
-    avformat_close_input(&fmt_ctx);
-
-    return 0;
-}
-#endif
