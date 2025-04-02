@@ -21,6 +21,9 @@
     <ClCompile Include="examples\02_audio.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="examples\03_subtitle.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\common.h">

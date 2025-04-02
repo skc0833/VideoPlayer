@@ -107,6 +107,9 @@ yasm 1.3.0-3
 (https://github.com/libsdl-org/SDL/releases/tag/release-2.32.2 에서 SDL2-devel-2.32.2-VC.zip 다운로드)<br/>
 d:\VideoPlayer\SDL2-2.32.2 하위에 include, lib 등이 존재하게 압축해제
 
+* SDL_ttf 도 다운로드(텍스트 자막 파일 출력시 필요)<br/>
+https://github.com/libsdl-org/SDL_ttf/releases/tag/release-2.24.0 에서 SDL2_ttf-devel-2.24.0-VC.zip 다운로드
+
 ### 3. FFmpeg
 ```
 $ cd <VideoPlayer_ROOT>
