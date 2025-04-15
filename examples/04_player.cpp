@@ -156,6 +156,9 @@ int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_buf, int 
         if (ret < 0)
             return -1;
 
+        // 리샘플링이 일어나는 경우(예: sample rate 또는 channel layout이 다를 때) 필수임
+        // (현재는 audio_codec_ctx->sample_rate 가 동일하므로 그냥 frame->nb_samples를 사용해도 됨)
+        // 실수 연산이 필요하고, **반올림 전략(UP, NEAR 등)**도 결정해야 하므로 av_rescale_rnd()가 안전함
         int dst_nb_samples = av_rescale_rnd(frame->nb_samples/*1024*/,
             audio_codec_ctx->sample_rate/*skc 44100 도 재생됨(실제값 48000)*/,
             audio_codec_ctx->sample_rate,
@@ -163,19 +166,17 @@ int audio_decode_frame(AVCodecContext* audio_codec_ctx, uint8_t* audio_buf, int 
 
         uint8_t* out_buffer = audio_buf;
 
-        // out_samples = 1024
         int out_samples = swr_convert(swr_ctx,
             &out_buffer,
             dst_nb_samples,
             (const uint8_t**)frame->data,
-            frame->nb_samples);
+            frame->nb_samples); // 1024
 
         if (out_samples < 0)
             return -1;
 
-        // out_buffer_size = 4096
         int out_buffer_size = av_samples_get_buffer_size(NULL,
-            2, out_samples, AV_SAMPLE_FMT_S16, 1);
+            2, out_samples, AV_SAMPLE_FMT_S16, 1); // 4096
 
         av_packet_unref(&pkt);
         return out_buffer_size;
