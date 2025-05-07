@@ -114,8 +114,7 @@ typedef struct MyAVPacketList {
     int serial;
 } MyAVPacketList;
 
-// serial 멤버(세션 식별자)는 많다!!!
-// 큐에 들어 있는 패킷들이 언제 생성된 세션(또는 재생 흐름)에 속하는지를 구분하기 위한 번호
+// serial: 큐에 들어 있는 패킷들이 언제 생성된 세션(또는 재생 흐름)에 속하는지를 구분하기 위한 번호
 // PacketQueue, MyAVPacketList, Clock, Frame
 // packet_queue_start(), packet_queue_flush() 에서 serial 증가
 typedef struct PacketQueue {
@@ -129,8 +128,9 @@ typedef struct PacketQueue {
     SDL_cond *cond;
 } PacketQueue;
 
-// VIDEO_PICTURE 나 SAMPLE 를 1로 강제 설정시에는 해당 스트림은 멈춰 있음
+// VIDEO_PICTURE_QUEUE_SIZE 나 SAMPLE_QUEUE_SIZE 를 1로 강제 설정시에는 해당 스트림은 멈춰 있음
 #define VIDEO_PICTURE_QUEUE_SIZE 3
+#define VIDEO_PICTURE_QUEUE_SIZE 2
 #define SUBPICTURE_QUEUE_SIZE 16
 #define SAMPLE_QUEUE_SIZE 9
 #define FRAME_QUEUE_SIZE FFMAX(SAMPLE_QUEUE_SIZE, FFMAX(VIDEO_PICTURE_QUEUE_SIZE, SUBPICTURE_QUEUE_SIZE))
@@ -180,7 +180,7 @@ typedef struct FrameQueue {
     int size;
     int max_size;
     int keep_last;
-    int rindex_shown;
+    int rindex_shown;   // 현재 rindex 프레임을 화면에 보여줬는지 여부(0 or 1)
     SDL_mutex *mutex;
     SDL_cond *cond;
     PacketQueue *pktq;
@@ -330,7 +330,7 @@ static int display_disable;
 static int borderless;
 static int alwaysontop;
 static int startup_volume = 100;
-static int show_status = 0; // skc -1;
+static int show_status = -1;
 static int av_sync_type = AV_SYNC_AUDIO_MASTER;
 static int64_t start_time = AV_NOPTS_VALUE;
 static int64_t duration = AV_NOPTS_VALUE;
@@ -338,8 +338,8 @@ static int fast = 0;
 static int genpts = 0;
 static int lowres = 0;
 static int decoder_reorder_pts = -1;
-//static int autoexit;
-static int autoexit = 1; //skc
+static int autoexit;
+//static int autoexit = 1; // -autoexit 명령행 인자없이 강제로 설정할 경우
 static int exit_on_keydown;
 static int exit_on_mousedown;
 static int loop = 1;
@@ -462,7 +462,7 @@ static int packet_queue_put(PacketQueue *q, AVPacket *pkt)
         av_packet_unref(pkt);
         return -1;
     }
-    av_packet_move_ref(pkt1, pkt);
+    av_packet_move_ref(pkt1, pkt); // 전달인자 pkt 가 비워짐
 
     SDL_LockMutex(q->mutex);
     ret = packet_queue_put_private(q, pkt1);
@@ -603,22 +603,20 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                     case AVMEDIA_TYPE_VIDEO:
                         // avcodec_send_packet() 보다 먼저 avcodec_receive_frame 가 호출돼야 함
                         // (디코더 내부에 아직 출력되지 않은 프레임이 남아 있을 가능성이 있음)
-                        ret = avcodec_receive_frame(d->avctx, frame); // 넌블럭킹 함수임
+                        ret = avcodec_receive_frame(d->avctx, frame); // 넌블럭킹 함수임. success: 0
                         if (ret >= 0) {
+                            av_assert0(frame->sample_rate == 0 && frame->nb_samples == 0);
                             // 0 = off(디코딩 순서(DTS 기준)대로 재생), 1 = on, -1 = auto
                             if (decoder_reorder_pts == -1) { // default
-                                static int called = 0;
                                 av_assert0(frame->pts == frame->best_effort_timestamp);
-                                //av_assert0(called++ * 3600 == frame->pts); // seeking 시 달라짐
 
                                 // 비디오는 PTS를 직접 계산하기 어려운 경우가 많아 frame->best_effort_timestamp를 사용
                                 // best_effort_timestamp 는 B-프레임과 같은 복잡한 프레임 타입을 고려하여 계산된 값임
                                 // frame->pts=0, 3600, 7200, ...
                                 frame->pts = frame->best_effort_timestamp;
-                                av_assert0(frame->pts == frame->best_effort_timestamp);
                             } else if (!decoder_reorder_pts) {
-                                // off(0) 이면 pkt_dts(디코딩 순서)로 설정
-                                // 참고로 on(1) 이면 frame->pts 을 그대로 사용
+                                // off(0) 이면 리오더 안 하니까 pkt_dts(Decoding Time Stamp) 직접 사용
+                                // on(1) 이면 리오더 허용하니 frame->pts 을 그대로 사용(이미 디코더가 리오더시킨 PTS 임)
                                 av_assert0(0);
                                 frame->pts = frame->pkt_dts;
                             }
@@ -627,18 +625,21 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                     case AVMEDIA_TYPE_AUDIO:
                         ret = avcodec_receive_frame(d->avctx, frame);
                         if (ret >= 0) {
+                            av_assert0(frame->sample_rate == 48000 && frame->nb_samples == 1024 && frame->width == 0);
                             AVRational tb = (AVRational){1, frame->sample_rate}; // {1, 48000}
                             av_assert0(frame->pts != AV_NOPTS_VALUE);
-                            // frame->sample_rate 와 d->avctx->pkt_timebase 가 다른 경우가 있나???
-                            av_assert0((tb.num == d->avctx->pkt_timebase.num) && (tb.den == d->avctx->pkt_timebase.den));
 
-                            // frame->pts=1024, 2048, ..., 480256(비율 일정함), frame->nb_samples=1024 로 고정
-                            //printf("@@skc decoder frame->pts=%d, frame->nb_samples=%d\n", frame->pts, frame->nb_samples);
+                            // frame->pts = 1024, 2048, ..., 480256(비율 일정), frame->nb_samples 는 1024 고정
+                            // printf("decoder_decode_frame() frame->pts=%d, frame->nb_samples=%d\n", frame->pts, frame->nb_samples);
                             static int called = 0;
                             av_assert0(frame->pts == 1024 * ++called);
 
                             if (frame->pts != AV_NOPTS_VALUE) {
                                 // d->avctx->pkt_timebase = {1, 48000}
+                                // frame->sample_rate 와(tb) d->avctx->pkt_timebase 가 다른 경우는 없는 듯함
+                                av_assert0((tb.num == d->avctx->pkt_timebase.num) && (tb.den == d->avctx->pkt_timebase.den));
+    
+                                // 디코딩된 frame->pts 를 tb 에 맞춰 그대로 사용중(pkt_timebase 와 동일하므로 frame->pts 는 그대로 유지됨)
                                 frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
                             }
                             else if (d->next_pts != AV_NOPTS_VALUE) {
@@ -659,19 +660,20 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                 }
                 if (ret >= 0)
                     return 1;
-            // 리턴값 ret 가 AVERROR(EAGAIN)(-11) 일 경우에만(추가 입력 패킷이 필요함)
-            // avcodec_send_packet() 를 호출해야 함
+            // 리턴값 ret 가 AVERROR(EAGAIN)(-11) 일 경우에만(추가 입력 패킷이 필요함) 루프 탈출
+            // avcodec_send_packet() 를 호출해줘야 함
             } while (ret != AVERROR(EAGAIN));
         }
 
         do {
             if (d->queue->nb_packets == 0)
-                //av_assert0(0);
                 SDL_CondSignal(d->empty_queue_cond);
             if (d->packet_pending) {
+                // 아래에서 avcodec_send_packet() 리턴값이 EAGAIN 에러(입력버퍼 가득참)일 경우 설정됐으며
+                // 다시 send 를 시도해야 하므로 packet_queue_get() 으로 패킷을 읽어오지 않아야 한다.
                 d->packet_pending = 0;
             } else {
-                // 최초에 d->queue->serial(1) != d->pkt_serial(-1) 라서 여기로 진입
+                // 최초에 d->queue->serial(1) != d->pkt_serial(-1) 라서 여기로 바로 진입
                 // d->pkt_serial = 1 로 읽혀짐
                 int old_serial = d->pkt_serial;
                 if (packet_queue_get(d->queue, d->pkt, 1/*block*/, &d->pkt_serial) < 0) // 블럭킹 대기!!!
@@ -690,6 +692,7 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
 
         if (d->avctx->codec_type == AVMEDIA_TYPE_SUBTITLE) {
             int got_frame = 0;
+            // 디코딩된 자막이 sub 에 리턴됨. 사용된 바이트수가 리턴(ret)
             ret = avcodec_decode_subtitle2(d->avctx, sub, &got_frame, d->pkt);
             if (ret < 0) {
                 ret = AVERROR(EAGAIN);
@@ -705,17 +708,18 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
             if (d->pkt->buf && !d->pkt->opaque_ref) {
                 FrameData *fd;
 
-                d->pkt->opaque_ref = av_buffer_allocz(sizeof(*fd));
+                d->pkt->opaque_ref = av_buffer_allocz(sizeof(*fd)); // AVBuffer 를 생성해 AVBufferRef 를 리턴
                 if (!d->pkt->opaque_ref)
                     return AVERROR(ENOMEM);
                 fd = (FrameData*)d->pkt->opaque_ref->data;
-                // a: 168, 497, 801, ..., v: 5147, 19967, 22825, ...
+                // a: 168, 497, 801, ..., v: 5147, 19967, 22825, ... 등 대중없음
                 fd->pkt_pos = d->pkt->pos;
             }
 
-            // EAGAIN 는 입력불가(입력버퍼 가득참) 에러이며, avcodec_receive_frame() 로 읽어줘야 한다.
-            // avcodec_send_packet(), avcodec_receive_frame() 는 유일하게 여기서만 호출중이므로
-            // avcodec_receive_frame() 로 비웠는데, avcodec_send_packet() 가 입력 불가 EAGAIN 에러가 발생하면 안된다.
+            // avcodec_send_packet() 시의 EAGAIN 는 입력불가(입력버퍼 가득참) 에러이며, avcodec_receive_frame() 로 읽어줘야 한다.
+            // avcodec_receive_frame() 가 EAGAIN 라서 현재 라인에 진입했으며 여기서 avcodec_send_packet() 도 EAGAIN 에러이면 API violation
+            // avcodec_send_packet(), avcodec_receive_frame() 는 유일하게 여기서만 호출중임
+            // send 를 여러번 해야 위의 receive 가 성공하고 있음
             if (avcodec_send_packet(d->avctx, d->pkt) == AVERROR(EAGAIN)) {
                 av_log(d->avctx, AV_LOG_ERROR, "Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
                 d->packet_pending = 1;
@@ -824,12 +828,13 @@ static Frame *frame_queue_peek_readable(FrameQueue *f)
     return &f->queue[(f->rindex + f->rindex_shown) % f->max_size];
 }
 
+// frame_queue_peek_writable() 이 성공했을때만 호출됨
 static void frame_queue_push(FrameQueue *f)
 {
     if (++f->windex == f->max_size)
         f->windex = 0;
     SDL_LockMutex(f->mutex);
-    f->size++;
+    f->size++; // 여기서 유일하게 증가
     SDL_CondSignal(f->cond);
     SDL_UnlockMutex(f->mutex);
 }
@@ -837,14 +842,17 @@ static void frame_queue_push(FrameQueue *f)
 static void frame_queue_next(FrameQueue *f)
 {
     if (f->keep_last && !f->rindex_shown) {
+        // 유일하게 여기서만 설정되고 있음(video, audio 출력시 호출됨)
+        // (pictq, sampq 만 keep_last = 1 라서 rindex_shown 가 1 이됨)
+        // rindex: 0, rindex_shown: 0 -> (0,0), (0, 1), (1, 1), (2, 1), ...
         f->rindex_shown = 1;
         return;
     }
     frame_queue_unref_item(&f->queue[f->rindex]);
-    if (++f->rindex == f->max_size)
+    if (++f->rindex == f->max_size) // 여기서 유일하게 증가
         f->rindex = 0;
     SDL_LockMutex(f->mutex);
-    f->size--;
+    f->size--; // 여기서 유일하게 감소
     SDL_CondSignal(f->cond);
     SDL_UnlockMutex(f->mutex);
 }
@@ -852,6 +860,7 @@ static void frame_queue_next(FrameQueue *f)
 /* return the number of undisplayed frames in the queue */
 static int frame_queue_nb_remaining(FrameQueue *f)
 {
+    // 프레임큐에서 화면에 출력중인 프레임은 뺀다.
     return f->size - f->rindex_shown;
 }
 
@@ -1017,7 +1026,7 @@ static void video_image_display(VideoState *is)
     Frame *sp = NULL;
     SDL_Rect rect;
 
-    vp = frame_queue_peek_last(&is->pictq);
+    vp = frame_queue_peek_last(&is->pictq); // return &f->queue[f->rindex]; 를 그리고 있음
     if (vk_renderer) {
         vk_renderer_display(vk_renderer, vp->frame);
         return;
@@ -1157,7 +1166,8 @@ static void video_audio_display(VideoState *s)
                 int b = s->sample_array[(idx + 4 * channels) % SAMPLE_ARRAY_SIZE];
                 int c = s->sample_array[(idx + 5 * channels) % SAMPLE_ARRAY_SIZE];
                 int d = s->sample_array[(idx + 9 * channels) % SAMPLE_ARRAY_SIZE]; // 9 채널 후의 샘플값
-                // TODO: VideoState::sample_array 는 서로 다른 쓰레드에서 lock 없이 update_sample_display() 에서 쓰여지고 video_audio_display() 에서 보여지고 있는데, lock 이 있어야 하는거 아닌가?
+                // 이론적으론 읽기, 쓰기 쓰레드에서 lock 이 필요하지만, 조금 깨지거나 끊겨 보여도 
+                // 사용자 체감상 거의 문제가 없으므로 실전에서는 omit(무시)
                 int score = a - d;
                 // (b ^ c) < 0 는 b와 c가 부호가 다르면, XOR 결과의 최상위 비트가 1 -> 음수
                 // e.g, b = 5 (0x00000005), c = -3 (0xFFFFFFFD), b ^ c = 0xFFFFFFF8 → < 0
@@ -1498,15 +1508,17 @@ static double get_clock(Clock *c)
     if (c->paused) {
         return c->pts;
     } else {
-        double time = av_gettime_relative() / 1000000.0;
-        // c->pts_drift + time 는 (pts - t1) + t2 이며, 즉 pts 에 흘러간 시간(t2 - t1)이 더해진 값임
+        double time = av_gettime_relative() / 1000000.0; // second 단위
+        // c->pts_drift(pts - t1) + time(t2) 는 (pts - t1) + t2 이며, 즉 pts 에 흘러간 시간(t2 - t1)이 더해진 값임
         // 여기에 정상 속도(c->speed == 1) 보다 빠르면(e.g, c->speed == 2) 시간이 추가됨(빨리 감기)
+        //printf("get_clock() c=%x, pts=%f, time=%f\n", c, c->pts_drift + time, time);
         return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
     }
 }
 
 static void set_clock_at(Clock *c, double pts, int serial, double time)
 {
+    //printf("set_clock_at() c=%x, pts=%f, time=%f\n", c, pts, time);
     c->pts = pts;
     c->last_updated = time;
     c->pts_drift = c->pts - time; // 연산 횟수가 적고, float 누적 오차가 줄게 됨
@@ -1541,18 +1553,23 @@ static void sync_clock_to_slave(Clock *c, Clock *slave)
         set_clock(c, slave_clock, slave->serial);
 }
 
+// 비디오 -> 오디오 -> 외부클럭
 static int get_master_sync_type(VideoState *is) {
     if (is->av_sync_type == AV_SYNC_VIDEO_MASTER) {
         if (is->video_st)
             return AV_SYNC_VIDEO_MASTER;
         else
+            // 비디오 스트림이 없는데 비디오 마스터 상태면 오디오 마스터를 리턴
+            // 참고로 오디오 스트림도 없으면 재생 안되게 처리돼 있음(read_thread() 참고)
             return AV_SYNC_AUDIO_MASTER;
     } else if (is->av_sync_type == AV_SYNC_AUDIO_MASTER) {
         if (is->audio_st)
             return AV_SYNC_AUDIO_MASTER;
         else
+            // 오디오 마스트인데 오디오가 없는 경우, 외부클럭 리턴
             return AV_SYNC_EXTERNAL_CLOCK;
     } else {
+        // 오디오도 비디오도 마스터가 아닌 경우, 외부클럭 리턴
         return AV_SYNC_EXTERNAL_CLOCK;
     }
 }
@@ -1573,22 +1590,28 @@ static double get_master_clock(VideoState *is)
             val = get_clock(&is->extclk);
             break;
     }
+    //printf("get_master_clock(%d) %.3f\n", get_master_sync_type(is), val);
     return val;
 }
 
+// 패킷큐에 남은 패킷 개수에 따라 클럭 속도를 조절
 static void check_external_clock_speed(VideoState *is) {
-   if (is->video_stream >= 0 && is->videoq.nb_packets <= EXTERNAL_CLOCK_MIN_FRAMES ||
-       is->audio_stream >= 0 && is->audioq.nb_packets <= EXTERNAL_CLOCK_MIN_FRAMES) {
-       // 패킷이 부족하면 속도 감소
-       set_clock_speed(&is->extclk, FFMAX(EXTERNAL_CLOCK_SPEED_MIN, is->extclk.speed - EXTERNAL_CLOCK_SPEED_STEP));
-   } else if ((is->video_stream < 0 || is->videoq.nb_packets > EXTERNAL_CLOCK_MAX_FRAMES) &&
-              (is->audio_stream < 0 || is->audioq.nb_packets > EXTERNAL_CLOCK_MAX_FRAMES)) {
-       // 패킷이 남으면 속도 증가
-       set_clock_speed(&is->extclk, FFMIN(EXTERNAL_CLOCK_SPEED_MAX, is->extclk.speed + EXTERNAL_CLOCK_SPEED_STEP));
+    // 아래에서 느려질 때는 0.900까지 허용하면서, 빨라질 때는 1.100까지 늘리지 않고 1.010까지만 제한하는 이유는?
+    // 영상 재생에서 '지연'은 티 나지 않지만, '빠름'은 바로 티 난다
+    // 따라서 감속은 10% 허용, 가속은 1 % 만 허용 → 사용자가 눈치채지 않을 수준에서 동기화 유지
+   if (is->video_stream >= 0 && is->videoq.nb_packets <= EXTERNAL_CLOCK_MIN_FRAMES/*2*/ ||
+       is->audio_stream >= 0 && is->audioq.nb_packets <= EXTERNAL_CLOCK_MIN_FRAMES/*2*/) {
+       // 패킷이 부족하면 속도 감소(1, 0.999, 0.998, ..., 0.900)
+       set_clock_speed(&is->extclk, FFMAX(EXTERNAL_CLOCK_SPEED_MIN/*0.900*/, is->extclk.speed - EXTERNAL_CLOCK_SPEED_STEP/*0.001*/));
+   } else if ((is->video_stream < 0 || is->videoq.nb_packets > EXTERNAL_CLOCK_MAX_FRAMES/*10*/) &&
+              (is->audio_stream < 0 || is->audioq.nb_packets > EXTERNAL_CLOCK_MAX_FRAMES/*10*/)) {
+       // 패킷이 남으면 속도 증가(1, 1.001, 1.002, ..., 1.010)
+       set_clock_speed(&is->extclk, FFMIN(EXTERNAL_CLOCK_SPEED_MAX/*1.010*/, is->extclk.speed + EXTERNAL_CLOCK_SPEED_STEP/*0.001*/));
    } else {
        double speed = is->extclk.speed;
        if (speed != 1.0)
-           // speed 가 1.0 초과, 미만에 따라 설정하는 speed 는 점진적으로 1.0 에 가까워짐
+           // speed 가 1이 아니고, 최소, 최대 구간내에 있는 경우, speed 를 점진적으로 1.0 이 되게 조정함
+           // (1.0 - speed) / fabs(1.0 - speed) 는 +1, -1 로 방향만 나타냄
            set_clock_speed(&is->extclk, speed + EXTERNAL_CLOCK_SPEED_STEP/*0.001*/ * (1.0 - speed) / fabs(1.0 - speed));
    }
 }
@@ -1617,6 +1640,7 @@ static void stream_toggle_pause(VideoState *is)
             is->vidclk.paused = 0;
         }
         // get_clock() 후 set_clock() 하는 이유는 타이밍 오차 누적을 줄이기 위한 재보정(re-sync)
+        // 자주 갱신할 수록 오차가 작게돼 정답에 가깝게 유지하게 됨
         set_clock(&is->vidclk, get_clock(&is->vidclk), is->vidclk.serial);
     }
     set_clock(&is->extclk, get_clock(&is->extclk), is->extclk.serial);
@@ -1638,7 +1662,7 @@ static void toggle_mute(VideoState *is)
 static void update_volume(VideoState *is, int sign, double step)
 {
     double volume_level = is->audio_volume ? (20 * log(is->audio_volume / (double)SDL_MIX_MAXVOLUME) / log(10)) : -1000.0;
-    int new_volume = lrint(SDL_MIX_MAXVOLUME * pow(10.0, (volume_level + sign * step) / 20.0));
+    int new_volume = lrint(SDL_MIX_MAXVOLUME * pow(10.0, (volume_level + sign * step) / 20.0)); // lrint() 반올림
     is->audio_volume = av_clip(is->audio_volume == new_volume ? (is->audio_volume + sign) : new_volume, 0, SDL_MIX_MAXVOLUME);
 }
 #endif
@@ -1651,12 +1675,13 @@ static void step_to_next_frame(VideoState *is)
     is->step = 1;
 }
 
-// is->vidclk 과 마스터를 비교해 조정된 delay 만큼 비디오를 표시하게 함
+// is->vidclk 과 마스터를 비교해 비디오 재생 시간(delay)을 계산해 리턴
 static double compute_target_delay(double delay, VideoState *is)
 {
     // delay 는 현재 프레임 유지 시간(duration) 값이 넘어오므로 항상 양수?!
     av_assert0(delay >= 0);
     double sync_threshold, diff = 0;
+    double skc_org_delay = delay;
 
     /* update delay to follow master synchronisation source */
     if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
@@ -1668,25 +1693,29 @@ static double compute_target_delay(double delay, VideoState *is)
            delay to compute the threshold. I still don't know
            if it is the best guess */
         sync_threshold = FFMAX(AV_SYNC_THRESHOLD_MIN/*0.04*/, FFMIN(AV_SYNC_THRESHOLD_MAX/*0.1*/, delay));
-        if (!isnan(diff) && fabs(diff) < is->max_frame_duration) {
+        if (!isnan(diff) && fabs(diff) < is->max_frame_duration/*3600.0*/) { // 오차가 너무 크면 skip 하며, delay 그대로를 리턴
             // 비디오가 (오디오 보다) 느릴 경우(diff(음수) <= -sync_threshold)
             // 느린만큼(diff) delay 를 줄여 빠르게 재생
             if (diff <= -sync_threshold)
-                delay = FFMAX(0, delay + diff);
+                delay = FFMAX(0, delay + diff); // diff 가 delay 만큼 느리면 delay = 0!!!
             // 비디오가 빠를 경우(diff >= sync_threshold)
             // 1) duration(=delay) 이 충분하면 delay 를 빠른만큼(diff) 늘려 느리게 재생
-            else if (diff >= sync_threshold && delay > AV_SYNC_FRAMEDUP_THRESHOLD/*0.1*/)
-                delay = delay + diff; // e.g, delay(1.2) = delay(0.2) + diff(1.0)
-            // 2) duration(=delay) 이 충분하지 않으면, 2배 느리게 재생
+            else if (diff >= sync_threshold && delay > AV_SYNC_FRAMEDUP_THRESHOLD/*0.1*/) {
+                //av_assert0(0);
+                delay = delay + diff; // e.g, delay(0.3) = delay(0.2) + diff(0.1)
+            }
+            // 2) duration(=delay) 이 충분하지 않으면, 2배만 느리게 재생
             // 짧은 프레임들은 프레임 유지 시간을 2배 증가
             // 프레임 유지 시간이 급격히 변하게 돼 영상이 뚝뚝 끊기는(stuttering) 현상을 방지?!
-            else if (diff >= sync_threshold)
+            else if (diff >= sync_threshold) {
                 delay = 2 * delay; // e.g, delay(0.2) = 2 * delay(0.1)
+            }
         }
     }
 
     av_log(NULL, AV_LOG_TRACE, "video: delay=%0.3f A-V=%f\n",
             delay, -diff);
+    //printf("video: org=%.3f delay=%0.3f A-V=%f\n", skc_org_delay, delay, -diff);
 
     av_assert0(delay >= 0);
     return delay;
@@ -1696,7 +1725,12 @@ static double vp_duration(VideoState *is, Frame *vp, Frame *nextvp) {
     if (vp->serial == nextvp->serial) {
         double duration = nextvp->pts - vp->pts;
         if (isnan(duration) || duration <= 0 || duration > is->max_frame_duration)
-            // pts 로 계산한 duration 이 유효하지 않으면, vp->duration 을 사용
+            // 우선 pts 로 계산한 duration 을 사용하고, 이게 유효하지 않으면, vp->duration 을 사용
+            // Frame::pts, duration 저장 시점은
+            // 1) 오디오는 audio_thread() 에서 디코딩 후, 
+            //    af->duration = { frame->nb_samples/*프레임당 1024 샘플*/, frame->sample_rate/*초당 48000 샘플*/ } 로 설정(21.3ms)
+            // 2) 비디오는 video_thread() 에서 필터에서 얻어온 frame_rate{25/1} 로 queue_picture(duration) 함수에 
+            //    duration/*40ms(고정)*/ = {frame_rate.den/*1*/, frame_rate.num/*25*/} 를 인자로 전달해 저장
             return vp->duration;
         else
             return duration;
@@ -1708,6 +1742,8 @@ static double vp_duration(VideoState *is, Frame *vp, Frame *nextvp) {
 static void update_video_pts(VideoState *is, double pts, int serial)
 {
     /* update current video pts */
+    static int skc_cnt = 0;
+    //printf("VIDEO:: update_video_pts(%d) pts=%f\n", skc_cnt++, pts);
     set_clock(&is->vidclk, pts, serial);
     sync_clock_to_slave(&is->extclk, &is->vidclk);
 }
@@ -1724,10 +1760,10 @@ static void video_refresh(void *opaque, double *remaining_time)
         check_external_clock_speed(is);
 
     if (!display_disable && is->show_mode != SHOW_MODE_VIDEO && is->audio_st) {
-        // 오디오의 경우 여기서 그리고, 비디오의 경우 아래에서 frame_drops_late 처리 후, 디스플레이
+        // 오디오(파형)는 여기서 표시하고, 비디오는 SHOW_MODE_VIDEO 일 경우, 아래에서 frame_drops_late 처리 후, 디스플레이
         time = av_gettime_relative() / 1000000.0;
-        if (is->force_refresh || is->last_vis_time + rdftspeed < time) {
-            video_display(is);
+        if (is->force_refresh || is->last_vis_time + rdftspeed/*0.02*/ < time) {
+            video_display(is); // video_audio_display() 호출
             is->last_vis_time = time;
         }
         *remaining_time = FFMIN(*remaining_time, is->last_vis_time + rdftspeed - time);
@@ -1735,61 +1771,77 @@ static void video_refresh(void *opaque, double *remaining_time)
 
     if (is->video_st) {
 retry:
-        if (frame_queue_nb_remaining(&is->pictq) == 0) {
+        if (frame_queue_nb_remaining(&is->pictq) == 0) { // return f->size - f->rindex_shown;
             // nothing to do, no picture to display in the queue
         } else {
             double last_duration, duration, delay;
             Frame *vp, *lastvp;
 
             /* dequeue the picture */
-            lastvp = frame_queue_peek_last(&is->pictq);
-            vp = frame_queue_peek(&is->pictq);
+            // lastvp, vp, nextvp(아래) 순서임
+            // vp 는 lastvp 에 rindex_shown 가 더해진 프레임(lastvp 의 다음 프레임)
+            // 최초에는 rindex_shown = 0 이라서 lastvp, vp 가 동일함
+            lastvp = frame_queue_peek_last(&is->pictq); // f->rindex 리턴
+            vp = frame_queue_peek(&is->pictq);          // f->rindex + f->rindex_shown 리턴
 
             if (vp->serial != is->videoq.serial) {
+                av_assert0(0);
                 frame_queue_next(&is->pictq);
                 goto retry;
             }
 
-            if (lastvp->serial != vp->serial)
+            if (lastvp->serial != vp->serial) {
+                av_assert0(0);
                 is->frame_timer = av_gettime_relative() / 1000000.0;
+            }
 
             if (is->paused)
                 goto display;
 
+            // lastvp 프레임의 재생시간을 pts 로 계산해 리턴, 아니면 Frame::duration 을 리턴(lastvp, vp 프레임 순서임)
             /* compute nominal last_duration */
-            last_duration = vp_duration(is, lastvp, vp);
-            // 리턴된 delay 는 master clock 차이에 따라 조정된 현재 프레임 유지 시간(duration)임
-            delay = compute_target_delay(last_duration, is);
+            last_duration = vp_duration(is, lastvp, vp); // 보통 0.04
 
-            time= av_gettime_relative()/1000000.0;
-            // 현재 시간(time)이 프레임 끝 시간(is->frame_timer + delay) 이전인 경우
-            if (time < is->frame_timer + delay) {
-                // 다음 프레임이 표시될 시간까지 대기
-                // 남은 재생 시간 = 프레임 끝 시간(is->frame_timer + delay) - 현재 시간(time)
+            // last_duration 재생시간을 master clock 과 비디오 클럭 차이만큼 조정해 현재 프레임 유지 시간(delay)을 획득
+            delay = compute_target_delay(last_duration, is); // 보통 거의 다 0.04
+            //printf("video_refresh() delay = compute_target_delay() --> %.3f\n", delay);
+
+            time= av_gettime_relative()/1000000.0; // seconds 단위
+            // 현재 시간(time)이 아직 프레임 끝 시간(is->frame_timer + delay) 이전인 경우
+            if (time < is->frame_timer + delay) { // 보통 연속 3번 진입 후 1번 패스
+                // 처음엔 is->frame_timer == 0 이라서 여긴 진입 안하고, frame_timer 는 현재시각으로 설정 & 아래서 첫 프레임이 그려짐(rindex = 0)
+                // 이후 재진입시 wall clock 이 이전의 frame_timer(거의 현재시각) + delay 보다 작으면, 기존 프레임 디스플레이를 유지
+                // 아직 현재 프레임을 보여주는 시간이 끝나지 않았다는 의미
+                // 남은 재생 시간(remaining_time) = 프레임 끝 시간(is->frame_timer + delay) - 현재 시간(time)
                 *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
                 goto display;
             }
+            // 이제 다음 프레임(rindex + 1)을 표시할 시간임
 
-            // 다음 프레임이 표시될 시간을 설정(is->frame_timer)
-            is->frame_timer += delay;
+            // 현재 시간이 프레임 끝 시간(is->frame_timer + delay)을 0.1s 이상 넘어섰으면, frame_timer 재설정
+            is->frame_timer += delay; // 총 재생한 시간 저장
+            //av_assert0(delay > 0); // delay == 0 존재
+            // frame_timer 는 현재시간(time)을 따라가고 있으며, 오차가 너무 크면(느리면) → frame_timer = time 으로 강제 싱크
             if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX/*0.1*/) {
-                // 다음 프레임이 표시될 시간(is->frame_timer)이 이미 지나갔으면 현재 시간으로 설정
-                // 딱 한번 호출되고 있음 X
+                // 처음엔 is->frame_timer == 0 이라서 최초에 한번 호출됨(중단점 걸면 타이밍이 안맞아 여러번 호출됨)
                 is->frame_timer = time;
-                //static int cnt = 0;
-                //av_assert0(cnt++ < 1);
             }
 
             SDL_LockMutex(is->pictq.mutex);
             if (!isnan(vp->pts))
+                // 마지막 프레임의 vp->pts(시작시간) 를 vidclk 에 설정
                 update_video_pts(is, vp->pts, vp->serial);
             SDL_UnlockMutex(is->pictq.mutex);
 
-            if (frame_queue_nb_remaining(&is->pictq) > 1) {
-                Frame *nextvp = frame_queue_peek_next(&is->pictq);
+            // 현재 시간이 다음 프레임 끝 시간을 넘어선 경우 드랍 처리
+            if (frame_queue_nb_remaining(&is->pictq) > 1) { // e.g, return f->size(2) - f->rindex_shown(0) = 2
+                Frame *nextvp = frame_queue_peek_next(&is->pictq); // e.g, return &f->queue[(f->rindex(0) + f->rindex_shown(0) + 1) % f->max_size];
                 duration = vp_duration(is, vp, nextvp);
-                if(!is->step && (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && time > is->frame_timer + duration){
-                    is->frame_drops_late++;
+                if(!is->step &&     // step 모드가 아니고
+                    (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && // 비디오 마스터가 아니고
+                    // 디코딩 등이 느려 프레임이 표시될 시간을 넘어선 경우, 버린다.
+                    time > is->frame_timer + duration){ // 현재 시간이 다음 프레임 끝 시간을 넘어선 경우를 의미함
+                    is->frame_drops_late++; // 프레임 드랍
                     frame_queue_next(&is->pictq);
                     goto retry;
                 }
@@ -1808,7 +1860,8 @@ retry:
                             || (is->vidclk.pts > (sp->pts + ((float) sp->sub.end_display_time / 1000)))
                             || (sp2 && is->vidclk.pts > (sp2->pts + ((float) sp2->sub.start_display_time / 1000))))
                     {
-                        // 시간이 지난 자막 이미지(is->sub_texture)는 투명하게 채운 후, 다음 프레임으로 이동
+                        // 시킹이 됐거나 비디오가 현재 자막 끝 위치를 지났거나, 다음 자막 시작 위치를 지났거나 하면
+                        // 현재 자막 이미지(is->sub_texture) 영역을 투명하게 채운 후, 다음 프레임으로 이동
                         // (memset() 으로 rgba 를 모두 0 으로 채움)
                         if (sp->uploaded) {
                             int i;
@@ -1831,7 +1884,7 @@ retry:
                 }
             }
 
-            frame_queue_next(&is->pictq);
+            frame_queue_next(&is->pictq); // 여기서 최초에 is->pictq.rindex_shown 0 -> 1, 이후 ++rindex
             is->force_refresh = 1;
 
             if (is->step && !is->paused)
@@ -1839,7 +1892,9 @@ retry:
         }
 display:
         /* display picture */
+        // 최초에 계속 frame_queue_nb_remaining() == 0 이라서 여러 번 호출되나 is->pictq.rindex_shown == 0 이므로 skip 됨
         if (!display_disable && is->force_refresh && is->show_mode == SHOW_MODE_VIDEO && is->pictq.rindex_shown)
+            // video_image_display() 에서 frame_queue_peek_last() 로 rindex 를 읽어서 그리고 있음(rindex = 0, rindex_shown = 1)
             video_display(is);
     }
     is->force_refresh = 0;
@@ -1862,11 +1917,11 @@ display:
             if (is->subtitle_st)
                 sqsize = is->subtitleq.size;
             av_diff = 0;
-            if (is->audio_st && is->video_st)
+            if (is->audio_st && is->video_st) // "A-V" 비디오, 오디오 둘다 있는 경우, 오디오 마스터
                 av_diff = get_clock(&is->audclk) - get_clock(&is->vidclk);
-            else if (is->video_st)
+            else if (is->video_st) // "M-V" 비디오만 있는 경우
                 av_diff = get_master_clock(is) - get_clock(&is->vidclk);
-            else if (is->audio_st)
+            else if (is->audio_st) // "M-A" 오디오만 있는 경우
                 av_diff = get_master_clock(is) - get_clock(&is->audclk);
 
             av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
@@ -1922,6 +1977,7 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
 
     av_frame_move_ref(vp->frame, src_frame);
     frame_queue_push(&is->pictq);
+    //av_usleep(100 * 1000000); //skc test
     return 0;
 }
 
@@ -1935,17 +1991,21 @@ static int get_video_frame(VideoState *is, AVFrame *frame)
     if (got_picture) {
         double dpts = NAN;
 
-        if (frame->pts != AV_NOPTS_VALUE)
-            dpts = av_q2d(is->video_st->time_base) * frame->pts;
+        av_assert0(frame->pts != AV_NOPTS_VALUE);
+        if (frame->pts != AV_NOPTS_VALUE) {
+            // frame->pts 는 best_effort_timestamp = 0, 3600, 7200, 10800, ..., 896400 라서
+            // dpts = 0, 0.04, 0.08, 0.12, ..., 9.96 // 초단위
+            dpts = av_q2d(is->video_st->time_base/*1/90000*/) * frame->pts;
+        }
 
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
         if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
             if (frame->pts != AV_NOPTS_VALUE) {
-                double diff = dpts - get_master_clock(is);
-                if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
-                    // 이전 프레임 획득에 걸린 시간(is->frame_last_filter_delay)이 
-                    // 현재 프레임 표시 시간(diff) 이상이면 drop!
+                double diff = dpts - get_master_clock(is); // e.g, V-A
+                if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD/*10.0*/ &&
+                    // 이전 프레임의 필터링에 걸린 시간(= 필터 지연시간, is->frame_last_filter_delay, 보통 0)이 
+                    // diff(V-M) 이상 오래 걸렸으면(비디오가 느리면) drop! (출력큐에 넣기 전에 디코더 쪽에서 버림)
                     diff - is->frame_last_filter_delay < 0 &&
                     is->viddec.pkt_serial == is->vidclk.serial &&
                     is->videoq.nb_packets) {
@@ -2060,10 +2120,10 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     // avfilter_get_by_name("buffer") 시의 "buffer" 는 내장된 비디오 소스 필터(source filter)의 고유 등록 이름
     // buffer 필터는 디코딩된 AVFrame을 필터링 그래프에 전달하는 시작점 역할을 함
     // 대응되는 sink 필터는 "buffersink"
-    // "abuffer", "abuffersink" 와 INSERT_FILT() 시의 "transpose" 등등 다수 존재함
+    // 고유 등록 이름은 "abuffer", "abuffersink" 와 INSERT_FILT() 시의 "transpose" 등등 다수 존재함
     // avfilter_graph_create_filter() 함수는 그래프에 "노드(필터 인스턴스)"를 추가하는 함수(링크는 X)
     if ((ret = avfilter_graph_create_filter(&filt_src,       // 생성된 필터 컨텍스트를 반환할 포인터
-                                            avfilter_get_by_name("buffer"), // 사용할 필터
+                                            avfilter_get_by_name("buffer"), // 사용할 필터(예약어)
                                             "ffplay_buffer", // 그래프 내에서의 필터 이름
                                             buffersrc_args,  // 필터에 전달할 옵션 문자열(예: video_size=640x480:pix_fmt=0:time_base=1/25)
                                             NULL,
@@ -2142,7 +2202,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     }
 
     // configure_filtergraph() 에서 avfilter_link(source_ctx, 0, sink_ctx, 0) 로 filt_src -> last_filter 를 연결
-    // filt_src -> last_filter == filt_ctx(n) -> ... -> filt_ctx(1) -> filt_ctx(0) -> filt_out 로 연결
+    // filt_src -> last_filter == filt_ctx(n) -> ... -> filt_ctx(1) -> filt_ctx(0) -> filt_out 로 연결(n 내림차순)
     if ((ret = configure_filtergraph(graph, vfilters, filt_src, last_filter)) < 0)
         goto fail;
 
@@ -2246,7 +2306,7 @@ static int audio_thread(void *arg)
         return AVERROR(ENOMEM);
 
     do {
-        if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
+        if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0) // packet_queue_get() 에서 대기
             goto the_end;
 
         if (got_frame) {
@@ -2259,8 +2319,9 @@ static int audio_thread(void *arg)
                     is->audio_filter_src.freq           != frame->sample_rate ||
                     is->auddec.pkt_serial               != last_serial;
 
-                if (reconfigure) {
+                if (reconfigure) { // 최초에 한번만 1 이며, 이후에는 0
                     char buf1[1024], buf2[1024];
+                    // buf1 = "mono", "stereo", "5.1" 등등
                     av_channel_layout_describe(&is->audio_filter_src.ch_layout, buf1, sizeof(buf1));
                     av_channel_layout_describe(&frame->ch_layout, buf2, sizeof(buf2));
                     av_log(NULL, AV_LOG_DEBUG,
@@ -2283,18 +2344,29 @@ static int audio_thread(void *arg)
                 goto the_end;
 
             // frame 인자에 읽어옴(Get a frame with filtered data from sink and put it in frame)
-            while ((ret = av_buffersink_get_frame_flags(is->out_audio_filter, frame, 0)) >= 0) {
+            // 처음에 성공(0) 후, 다음 번 호출시 AVERROR(EAGAIN)(-11) 로 루프 탈출
+            while ((ret = av_buffersink_get_frame_flags(is->out_audio_filter, frame/*out*/, 0)) >= 0) {
                 FrameData *fd = frame->opaque_ref ? (FrameData*)frame->opaque_ref->data : NULL;
                 // 필터 체인을 통과하면 pts 단위가 변경될 수 있으므로 아래에서 frame->pts * av_q2d(tb)
-                tb = av_buffersink_get_time_base(is->out_audio_filter);
+                tb = av_buffersink_get_time_base(is->out_audio_filter); // tb = {1/48000}
                 if (!(af = frame_queue_peek_writable(&is->sampq)))
                     goto the_end;
 
+                // 오디오 AVFrame::pts 를 (frame->pts) tb 단위로 변환해 af->pts 에(Frame::pts) 저장
+                // 여기서 1024, 2048, ..., 480256(비율 일정) -> 0.0213, 0.0426, ... 10.0053 로 변경돼 저장됨(1024/48000, ...)
                 af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
+
                 av_assert0(fd && fd->pkt_pos);
                 af->pos = fd ? fd->pkt_pos : -1;
                 af->serial = is->auddec.pkt_serial;
-                af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
+                // frame->nb_samples: 이 프레임에 포함된 오디오 샘플 수
+                af->duration = av_q2d((AVRational){frame->nb_samples/*1024*/, frame->sample_rate/*48000*/}); // 0.0213
+
+                // frame->pts=1024, af->pts=0.0213, af->pos=497
+                // frame->pts=2048, af->pts=0.0427, af->pos=801
+                // ...
+                // frame->pts=480256, af->pts=10.0053, af->pos=775461
+                // printf("audio_thread() frame->pts=%d, af->pts=%.4f, af->pos=%d\n", frame->pts, af->pts, af->pos);
 
                 av_frame_move_ref(af->frame, frame);
                 frame_queue_push(&is->sampq);
@@ -2332,8 +2404,13 @@ static int video_thread(void *arg)
     double duration;
     int ret;
     AVRational tb = is->video_st->time_base;
-    // 일부 컨테이너나 코덱에서는 AVStream->r_frame_rate, avg_frame_rate 등이 정확하지 않거나 비어있을 수 있음
-    // 또는 필터링 이후에는 AVFrame 단위로 fps를 추정해야 하는 경우가 많음
+    av_assert0(tb.num == 1 && tb.den == 90000);
+    // 동영상에는 명확하게 프레임레이트가 명시되지 않은 경우가 많음
+    // 따라서 FFmpeg은 단순히 AVStream::avg_frame_rate(스트림 자체에 선언된 평균 프레임레이트)
+    // 또는 r_frame_rate (헤더에 기록된 frame rate)가 아닌,
+    // av_guess_frame_rate() 함수를 통해 보다 정확하고 신뢰도 높은 프레임레이트 추정한다.
+
+    // 현재 frame_rate 는 is->video_st->avg_frame_rate, r_frame_rate 와 동일 값임({25/1})
     AVRational frame_rate = av_guess_frame_rate(is->ic, is->video_st, NULL);
 
     AVFilterGraph *graph = NULL;
@@ -2348,10 +2425,11 @@ static int video_thread(void *arg)
         return AVERROR(ENOMEM);
 
     for (;;) {
-        ret = get_video_frame(is, frame); // frame 에 디코딩(Frame::pts 등)
+        // frame->pts 에 best_effort_timestamp 가 리턴됨(0, 3600, 7200, ...)
+        ret = get_video_frame(is, frame);
         if (ret < 0)
             goto the_end;
-        if (!ret)
+        if (!ret) // is->frame_drops_early++ 된 경우(ret == 0), 다음 프레임 처리
             continue;
 
         if (   last_w != frame->width
@@ -2385,6 +2463,8 @@ static int video_thread(void *arg)
             // "[in]scale=320:240[scaled];"
             // "[scaled]drawbox=x=50:y=50:w=100:h=100:color=red@0.5[out];"
             // "[out]buffersink";
+            // 현재 vfilters_list == NULL 임. 그래도 상관없이 내부에서 "video_size=%dx%d:pix_fmt=%d:..." 등은 설정됨
+            av_assert0(!vfilters_list);
             if ((ret = configure_video_filters(graph, is, vfilters_list ? vfilters_list[is->vfilter_idx] : NULL, frame)) < 0) {
                 SDL_Event event;
                 event.type = FF_QUIT_EVENT;
@@ -2402,7 +2482,7 @@ static int video_thread(void *arg)
             frame_rate = av_buffersink_get_frame_rate(filt_out);
         }
 
-        ret = av_buffersrc_add_frame(filt_in, frame);
+        ret = av_buffersrc_add_frame(filt_in, frame); // frame 은 reference 를 뺏기고 reset 된다.
         if (ret < 0)
             goto the_end;
 
@@ -2413,7 +2493,8 @@ static int video_thread(void *arg)
 
             // sink 로부터 filtered data 를 획득(frame 에 채워짐)
             // 0, -11(AVERROR(EAGAIN)) 순서로 리턴중.
-            ret = av_buffersink_get_frame_flags(filt_out, frame, 0);
+            // EAGAIN 는 현재 시점에서 읽을 수 있는 프레임이 없으므로, "다시 시도(EAGAIN)"하라는 의미(av_buffersrc_add_frame 호출 필요)
+            ret = av_buffersink_get_frame_flags(filt_out, frame, 0); // 필터링된 frame 이 채워짐
             if (ret < 0) {
                 if (ret == AVERROR_EOF)
                     is->viddec.finished = is->viddec.pkt_serial;
@@ -2423,25 +2504,27 @@ static int video_thread(void *arg)
 
             fd = frame->opaque_ref ? (FrameData*)frame->opaque_ref->data : NULL;
 
+            //av_usleep(0.5 * 1000000); //skc test
             is->frame_last_filter_delay = av_gettime_relative() / 1000000.0 - is->frame_last_returned_time;
-            if (fabs(is->frame_last_filter_delay) > AV_NOSYNC_THRESHOLD / 10.0)
+            if (fabs(is->frame_last_filter_delay) > AV_NOSYNC_THRESHOLD/*10.0*/ / 10.0)
                 is->frame_last_filter_delay = 0;
             tb = av_buffersink_get_time_base(filt_out); // tb = 1/90000
-            // frame_rate = 25/1, duration = 1/25 = 0.04
+            av_assert0(tb.num == 1 && tb.den == 90000);
+
+            // frame_rate = 25/1 --> duration = 1/25 = 0.04
             duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);
             av_assert0(frame_rate.num == 25 && frame_rate.den == 1);
             av_assert0(duration == 0.04);
             // frame->pts = 0, 3600, 7200, 10800, ..., 896400, av_q2d(tb) = (1 / 90000)
-            // pts = 0, 0.04, 0.08, 0.12, ..., 9.96
+            // pts = 0, 0.04, 0.08, 0.12, ..., 9.96 // 초단위
             // fd->pkt_pos 는 5147, 22825, 19967, 27078, ..., 7731740 등 대중없음
             // 비디오의 경우, frame->pts 는 위에서 avcodec_receive_frame() 후 frame->best_effort_timestamp 값으로 설정중임
             pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
             av_assert0(frame->pts != AV_NOPTS_VALUE);
 
-            //printf("@@skc frame->pts=%d, pts=%f, fd->pkt_pos=%d\n", frame->pts, pts, fd ? fd->pkt_pos : -1);
             av_assert0(fd);
-            // is->out_video_filter 로 획득한 frame_rate 로부터 Frame::duration 값이 설정된다!!!
-            ret = queue_picture(is, frame, pts, duration, fd ? fd->pkt_pos : -1, is->viddec.pkt_serial);
+            // duration 은 40ms 고정(25fps), pts 는 0 부터 duration 만큼씩 이동
+            ret = queue_picture(is, frame, pts, duration, fd ? fd->pkt_pos : -1, is->viddec.pkt_serial); // 성공 0
             av_frame_unref(frame);
             if (is->videoq.serial != is->viddec.pkt_serial)
                 break;
@@ -2521,25 +2604,37 @@ static int synchronize_audio(VideoState *is, int nb_samples)
         double diff, avg_diff;
         int min_nb_samples, max_nb_samples;
 
-        diff = get_clock(&is->audclk) - get_master_clock(is);
+        diff = get_clock(&is->audclk) - get_master_clock(is); // A-V
 
         // audio_diff_cum = 누적 오차
-        if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD) {
-            // 이전 차이를 참고하여 점진적으로 조정(즉, 갑자기 보정하지 않고 부드럽게 보정), 가중평균?!
+        if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD/*10.0*/) {
+            // 이전 차이를 참고하여 점진적으로 조정(즉, 갑자기 보정하지 않고 부드럽게 보정)
             // audio_diff_avg_coef: 과거 diff 값을 얼마나 반영할지 결정하는 보정 계수
-            is->audio_diff_cum = diff + is->audio_diff_avg_coef * is->audio_diff_cum;
-            if (is->audio_diff_avg_count < AUDIO_DIFF_AVG_NB) {
+            // e.g, 
+            // 최초에 한번만 diff = 1 이고, 그 이후 계속 0 이면, audio_diff_cum = 1(1), 0.8(1), 0.64(1), 0.512(1), ...
+            // 계속 diff = 1 이면, audio_diff_cum = 1(1), 1.8(2), 2.44(3), 2.952(4), ...
+            // 이전 누적 평균값(audio_diff_cum)에 현재 diff를 누적(지수이동평균 방식)
+            // --> audio_diff_cum = diff + α * prev_cum
+            // 아래에서 최종 평균값(최근값 반영률)은 (1 - α) * cum
+            is->audio_diff_cum = diff + is->audio_diff_avg_coef/*0.79*/ * is->audio_diff_cum;
+            if (is->audio_diff_avg_count < AUDIO_DIFF_AVG_NB/*20*/) {
                 /* not enough measures to have a correct estimate */
                 is->audio_diff_avg_count++;
             } else {
                 /* estimate the A-V difference */
-                // 오디오와 비디오 간의 싱크 차이(diff)를 평균적으로 계산하여 점진적으로 보정하기 위한 로직
-                avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
+                // AUDIO_DIFF_AVG_NB(20)번 만큼 누적 오차 audio_diff_cum 를 구한 후,
+                // 오디오와 비디오 간의 싱크 차이(diff)를 평균적으로 계산하여 점진적으로 보정
+                avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef/*0.79*/);
 
-                if (fabs(avg_diff) >= is->audio_diff_threshold) {
+                if (fabs(avg_diff) >= is->audio_diff_threshold/*0.04266 = 42ms*/) {
+                    // 오디오가 빠르면 nb_samples 에 추가(샘플 빠르게 소모), 느리면 nb_samples 에서 줄임
+                    // 보정 여부는 avg_diff 로 체크하고, 보정시에는 실제 현재 오차 diff 를 반영함
+                    //av_assert0(0);
                     wanted_nb_samples = nb_samples + (int)(diff * is->audio_src.freq);
-                    min_nb_samples = ((nb_samples * (100 - SAMPLE_CORRECTION_PERCENT_MAX) / 100));
+                    min_nb_samples = ((nb_samples * (100 - SAMPLE_CORRECTION_PERCENT_MAX/*10*/) / 100));
                     max_nb_samples = ((nb_samples * (100 + SAMPLE_CORRECTION_PERCENT_MAX) / 100));
+                    // wanted_nb_samples 는 최소, 최대로 nb_samples 의 90 ~ 110% 내에 설정
+                    // af->frame->nb_samples = 1024 이 전달되므로 항상 0 이 아닌 어느정도 값을 가짐?!
                     wanted_nb_samples = av_clip(wanted_nb_samples, min_nb_samples, max_nb_samples);
                 }
                 av_log(NULL, AV_LOG_TRACE, "diff=%f adiff=%f sample_diff=%d apts=%0.3f %f\n",
@@ -2554,6 +2649,7 @@ static int synchronize_audio(VideoState *is, int nb_samples)
         }
     }
 
+    av_assert0(wanted_nb_samples >= nb_samples); // 보통 오디오가 비디오보다 빠르다.
     return wanted_nb_samples;
 }
 
@@ -2577,6 +2673,9 @@ static int audio_decode_frame(VideoState *is)
     do {
 #if defined(_WIN32)
         while (frame_queue_nb_remaining(&is->sampq) == 0) {
+            // 오디오 콜백 한번 처리할 시간(is->audio_hw_buf_size(8192) / is->audio_tgt.bytes_per_sec(192000) = 42.6ms)의 절반을
+            // 초과하게 되면 -1 에러 리턴(caller 에서 무음을 출력함)
+            // (초당 처리하는 크기(bytes_per_sec)로 audio_hw_buf_size 크기의 소요 시간을 계산함)
             if ((av_gettime_relative() - audio_callback_time) > 1000000LL * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec / 2)
                 return -1;
             av_usleep (1000);
@@ -2587,9 +2686,10 @@ static int audio_decode_frame(VideoState *is)
         frame_queue_next(&is->sampq);
     } while (af->serial != is->audioq.serial);
 
-    data_size = av_samples_get_buffer_size(NULL, af->frame->ch_layout.nb_channels,
-                                           af->frame->nb_samples,
-                                           af->frame->format, 1);
+    data_size = av_samples_get_buffer_size(NULL, af->frame->ch_layout.nb_channels/*2*/,
+                                           af->frame->nb_samples/*1024*/,
+                                           af->frame->format/*2*/, 1); // 단순 계산
+    av_assert0(data_size == 4096);
 
     wanted_nb_samples = synchronize_audio(is, af->frame->nb_samples);
 
@@ -2597,6 +2697,8 @@ static int audio_decode_frame(VideoState *is)
         av_channel_layout_compare(&af->frame->ch_layout, &is->audio_src.ch_layout) ||
         af->frame->sample_rate   != is->audio_src.freq           ||
         (wanted_nb_samples       != af->frame->nb_samples && !is->swr_ctx)) {
+        // wanted_nb_samples = 1126, af->frame->nb_samples = 1024 처럼 다른 경우가 존재함
+        //av_assert0(0);
         int ret;
         swr_free(&is->swr_ctx);
         ret = swr_alloc_set_opts2(&is->swr_ctx,
@@ -2618,8 +2720,10 @@ static int audio_decode_frame(VideoState *is)
     }
 
     if (is->swr_ctx) {
+        av_assert0(0);
         const uint8_t **in = (const uint8_t **)af->frame->extended_data;
         uint8_t **out = &is->audio_buf1;
+        // 리샘플링 중 버퍼 부족을 방지하기 위해 out_count 에 256 여유를 둠
         int out_count = (int64_t)wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
         int out_size  = av_samples_get_buffer_size(NULL, is->audio_tgt.ch_layout.nb_channels, out_count, is->audio_tgt.fmt, 0);
         int len2;
@@ -2628,21 +2732,28 @@ static int audio_decode_frame(VideoState *is)
             return -1;
         }
         if (wanted_nb_samples != af->frame->nb_samples) {
+            // 오디오가 비디오와 동기화되지 않을 경우, sample_delta만큼 샘플을 조정하여 compensation_distance 동안 서서히 싱크를 맞추는 역할
+            // swr_set_compensation(struct SwrContext *s, int sample_delta, int compensation_distance);
+            // sample_delta: 보정할 샘플 개수, compensation_distance: 조정할 거리(프레임 수)
+            //av_assert0(0); // wanted_nb_samples == 1126, af->frame->nb_samples == 1024 인 경우가 존재함
             if (swr_set_compensation(is->swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_tgt.freq / af->frame->sample_rate,
                                         wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate) < 0) {
                 av_log(NULL, AV_LOG_ERROR, "swr_set_compensation() failed\n");
                 return -1;
             }
         }
-        av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size, out_size);
+        av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size/*out 실제 할당된 크기*/, out_size);
         if (!is->audio_buf1)
             return AVERROR(ENOMEM);
-        len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples);
+        // 리샘플링 수행! in_count 만큼 입력 샘플을 받아서, out_count 만큼 출력 샘플을 만들어 냄
+        // 이전에 swr_set_compensation() 을 호출했으면, compensation_distance 동안 서서히 부드럽게 적용됨
+        len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples); // is->audio_buf1(out) 에 변환
         if (len2 < 0) {
             av_log(NULL, AV_LOG_ERROR, "swr_convert() failed\n");
             return -1;
         }
-        if (len2 == out_count) {
+        if (len2 == out_count) { // out_count 샘플까지 최대한 채움
+            // len2 == out_count면 → 버퍼 꽉 참 → swr 내부에 더 남아 있을 수도 있음. 이 경우, swr_init() 로 강제로 초기화
             av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
             if (swr_init(is->swr_ctx) < 0)
                 swr_free(&is->swr_ctx);
@@ -2650,20 +2761,41 @@ static int audio_decode_frame(VideoState *is)
         is->audio_buf = is->audio_buf1;
         resampled_data_size = len2 * is->audio_tgt.ch_layout.nb_channels * av_get_bytes_per_sample(is->audio_tgt.fmt);
     } else {
-        is->audio_buf = af->frame->data[0];
+        is->audio_buf = af->frame->data[0]; // af->frame->data 배열의 크기 = 8
         resampled_data_size = data_size;
     }
 
-    audio_clock0 = is->audio_clock;
+    audio_clock0 = is->audio_clock; // 최초에 0
     /* update the audio clock with the pts */
     if (!isnan(af->pts))
+        // af->pts(오디오 프레임의 시작 시간)에 프레임 재생시간을 더해 끝 시간을 is->audio_clock 에 저장
+        // nb_samples(1024) / sample_rate(48000) = 0.021(고정)
+        // af->pts = 0.021, 0.043, 0.064, ..., 10.0053
+        // is->audio_clock = af->pts + 0.021
+        // = 0.042(0.021 + 0.021), 0.064(0.043 + 0.021), ..., 10.0266(10.0053 + 0.0213) 범위임
+        // af->pts 는 0 이 아니라 *** 0.0213 부터 시작 ***하고 있음(비디오는 0 부터 시작), 0.0213 의 배수로 증가
+    
+        // 현재 스트림의 전체 길이는 v: 10.0, a: 10.0266 (read_thread() 에서 st->duration 로 확인 가능)
+        // 시작시 디코딩 프리롤(pre-roll) 데이터(초기 "warm-up" 샘플)를 스킵할 수도 있다고 함
+        // (그래서 0 이 아니라 0.0213 부터 시작?!)
         is->audio_clock = af->pts + (double) af->frame->nb_samples / af->frame->sample_rate;
     else
         is->audio_clock = NAN;
     is->audio_clock_serial = af->serial;
-#ifdef DEBUG
+
+    // delay 는 clock(is->audio_clock) - clock0(last_clock )
+    // --> 0.043(0.021 + 0.021 - 0), 0.021(0.043 + 0.021 - 0.043), 0.021(0.064 + 0.021 - 0.043), ...
+
+    //audio: delay = 0.043 clock = 0.043 clock0 = 0.000 // 처음에만 delay = 0.043 로 시작, 이후 0.021
+    //audio: delay = 0.021 clock = 0.064 clock0 = 0.043
+    //audio: delay = 0.021 clock = 0.085 clock0 = 0.064
+    // ...
+    //audio: delay = 0.021 clock = 10.005 clock0 = 9.984 // 마지막 pts 는 10.0053 였음
+    //audio: delay = 0.021 clock = 10.027 clock0 = 10.005 // 재생 끝 시각은 0.021 더해서 10.027 로 스트림의 duration 값과 일치함
+#if 0 //def DEBUG
     {
         static double last_clock;
+        av_assert0(last_clock == audio_clock0);
         printf("audio: delay=%0.3f clock=%0.3f clock0=%0.3f\n",
                is->audio_clock - last_clock,
                is->audio_clock, audio_clock0);
@@ -2682,15 +2814,19 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
     audio_callback_time = av_gettime_relative();
 
     while (len > 0) {
-        if (is->audio_buf_index >= is->audio_buf_size) {
-           audio_size = audio_decode_frame(is);
+        if (is->audio_buf_index >= is->audio_buf_size) { // 첨엔 둘다 0
+            // audio_decode_frame() 에서 is->audio_clock = af->pts + duration; 로 재생 완료 시점을 저장하고
+            // 리샘플링된 resampled_data_size 를 리턴
+            // 현재의 sdl_audio_callback() 에서는 set_clock_at(&audclk, audio_clock - 버퍼지연, serial, time);
+           audio_size = audio_decode_frame(is); // 오디오 리샘플링 후, is->audio_buf 가 설정된다.
+           //av_assert0(audio_size == 4096); // 종료시 -1 이 리턴
            if (audio_size < 0) {
                 /* if error, just output silence */
                is->audio_buf = NULL;
-               is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
+               is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE/*512*/ / is->audio_tgt.frame_size * is->audio_tgt.frame_size; // 512
            } else {
                if (is->show_mode != SHOW_MODE_VIDEO)
-                   update_sample_display(is, (int16_t *)is->audio_buf, audio_size);
+                   update_sample_display(is, (int16_t *)is->audio_buf, audio_size); // is->audio_buf 를 is->sample_array 에 복사
                is->audio_buf_size = audio_size;
            }
            is->audio_buf_index = 0;
@@ -2705,14 +2841,61 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
             if (!is->muted && is->audio_buf)
                 SDL_MixAudioFormat(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, AUDIO_S16SYS, len1, is->audio_volume);
         }
-        len -= len1;
+        len -= len1; // 보통 len = 8192, len1 = 4096 라서 2번 루프 돔
         stream += len1;
-        is->audio_buf_index += len1;
+        is->audio_buf_index += len1; // 출력(write)한 만큼 증가
     }
-    is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
+    is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index; // 남은 버퍼 크기
     /* Let's assume the audio driver that is used by SDL has two periods. */
     if (!isnan(is->audio_clock)) {
-        set_clock_at(&is->audclk, is->audio_clock - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec, is->audio_clock_serial, audio_callback_time / 1000000.0);
+        // 출력되지 않은 버퍼 데이터를 계산해 오디오 클럭을 현재 실제 재생 중인 위치로 조정
+        // 오디오 데이터가 많이 버퍼링될수록(is->audio_write_buf_size 가 클수록)
+        // 오디오 클럭(pts 인자)을 앞으로 당겨(과거로 이동) 비디오와 동기화되도록 조정
+        // -> 오디오 버퍼의 지연(buffering delay)을 고려하여 오디오 클럭(is->audclk)을 조정
+
+        // audio_clock 은 지금까지 쌓은 모든 오디오 데이터가 재생 완료되었을 때 도달할 시간
+        // *** 현재 시점에서는 버퍼에 남은 양만큼 빼줘야 정확한 현재 재생 시간(audclk)을 얻을 수 있다!!!
+
+        // audio_clock은 '누적된 끝 시점'을 기준으로 잡아야, 남은 버퍼량을 뺄 때 현재 재생 중인 위치를 정확히 계산할 수 있다.
+
+        /*
+        | <------프레임 A------> | <------프레임 B------> | <------프레임 C------> |
+        0s                     0.02s                    0.04s                  0.06s
+
+            프레임 A : 0s ~0.02s 재생
+            프레임 B : 0.02s ~0.04s 재생
+            프레임 C : 0.04s ~0.06s 재생
+
+            is->audio_clock = 0.06초(프레임 C까지 누적 완료한 시점)
+
+            이 상태에서: 버퍼에 0.01초어치 남았다면
+            실제 현재 오디오는 0.06초 - 0.01초 = 0.05초를 재생 중
+        */
+        
+        av_assert0(is->audio_write_buf_size == 0);
+        static int skc_cnt = 0;
+        double skc_delay = (double)(2 * is->audio_hw_buf_size/*8192*/ + is->audio_write_buf_size/*0*/) / is->audio_tgt.bytes_per_sec/*192000*/; // 0.0853
+        //printf("AUDIO:: sdl_audio_callback() set_clock_at(%d) audio_clock=%.3f, pts=%.3f, time=%.3f\n",
+        //    skc_cnt++, is->audio_clock, is->audio_clock - skc_delay, audio_callback_time / 1000000.0);
+
+        // 출력되지 않은 버퍼 데이터를 계산해 오디오 클럭을 현재 실제 재생 중인 위치로 조정
+        // audio_callback_time 시점에 오디오 클럭(audclk)은 프레임 끝 시간 - 아직 출력안된 남은 버퍼 시간 위치를 재생중이어야 함?!
+        set_clock_at(&is->audclk,
+            is->audio_clock - (double)(2 * is->audio_hw_buf_size/*8192*/ + is->audio_write_buf_size/*0*/) / is->audio_tgt.bytes_per_sec/*192000*/, // - 뒷부분은 항상 0.0853
+            is->audio_clock_serial, audio_callback_time / 1000000.0);
+
+        // 아래 로그에서 pts 가 audclk 에 저장되는 값
+        //AUDIO::sdl_audio_callback() set_clock_at(0) audio_clock = 0.064, pts = -0.021, time = 1746734660.813
+        //VIDEO::update_video_pts(0) pts = 0.000000
+        //AUDIO::sdl_audio_callback() set_clock_at(1) audio_clock = 0.107, pts =  0.021, time = 1746734660.853
+        //VIDEO::update_video_pts(1) pts = 0.040000
+        //AUDIO::sdl_audio_callback() set_clock_at(2) audio_clock = 0.149, pts =  0.064, time = 1746734660.893
+        //VIDEO::update_video_pts(2) pts = 0.080000
+        // ...
+        //VIDEO:: update_video_pts(248) pts=9.920000
+        //AUDIO::sdl_audio_callback() set_clock_at(233) audio_clock = 10.005, pts = 9.920, time = 1746734670.754
+        //VIDEO::update_video_pts(249) pts = 9.960000
+        //AUDIO::sdl_audio_callback() set_clock_at(234) audio_clock = 10.027, pts = 9.941, time = 1746734670.794
         sync_clock_to_slave(&is->extclk, &is->audclk);
     }
 }
@@ -2747,6 +2930,10 @@ static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int 
         next_sample_rate_idx--;
     wanted_spec.format = AUDIO_S16SYS;
     wanted_spec.silence = 0;
+    // auto skc_freq = wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC;
+    // auto skc_log = av_log2(skc_freq);
+    // wanted_spec.freq/*48000*/ / SDL_AUDIO_MAX_CALLBACKS_PER_SEC/*30*/) = 1600
+    // av_log2(1600) = 10.64385 = 10
     wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
     wanted_spec.callback = sdl_audio_callback;
     wanted_spec.userdata = opaque;
@@ -2851,6 +3038,9 @@ static int stream_component_open(VideoState *is, int stream_index)
     if (!avctx)
         return AVERROR(ENOMEM);
 
+    // avcodec_parameters_to_context() 호출시 avctx->sample_rate, sample_fmt 등이 채워짐
+    // sample_rate: a = 48000, v = 0
+    // sample_fmt: a=AV_SAMPLE_FMT_FLTP (8), v=AV_SAMPLE_FMT_NONE (-1)
     ret = avcodec_parameters_to_context(avctx, ic->streams[stream_index]->codecpar);
     if (ret < 0)
         goto fail;
@@ -2925,9 +3115,10 @@ static int stream_component_open(VideoState *is, int stream_index)
             if (ret < 0)
                 goto fail;
             is->audio_filter_src.fmt            = avctx->sample_fmt;
+            av_assert0(!afilters);
             if ((ret = configure_audio_filters(is, afilters, 0)) < 0)
                 goto fail;
-            sink = is->out_audio_filter;
+            sink = is->out_audio_filter; // 위에 configure_audio_filters() 함수에서 채워짐
             sample_rate    = av_buffersink_get_sample_rate(sink);
             ret = av_buffersink_get_ch_layout(sink, &ch_layout);
             if (ret < 0)
@@ -2935,6 +3126,8 @@ static int stream_component_open(VideoState *is, int stream_index)
         }
 
         /* prepare audio output */
+        // 원하는 사양(ch, sample rate)의 is->audio_tgt 을 획득
+        // audio_open() 함수에서 강제로 is->audio_tgt->fmt = AV_SAMPLE_FMT_S16 (1) 로 설정중임
         if ((ret = audio_open(is, &ch_layout, sample_rate, &is->audio_tgt)) < 0)
             goto fail;
         is->audio_hw_buf_size = ret;
@@ -2943,10 +3136,12 @@ static int stream_component_open(VideoState *is, int stream_index)
         is->audio_buf_index = 0;
 
         /* init averaging filter */
-        is->audio_diff_avg_coef  = exp(log(0.01) / AUDIO_DIFF_AVG_NB);
+        // log(0.01) / 20 = -0.23, exp(-0.23) = 0.79432
+        is->audio_diff_avg_coef  = exp(log(0.01) / AUDIO_DIFF_AVG_NB); // log 은 자연로그 ln 임
         is->audio_diff_avg_count = 0;
         /* since we do not have a precise anough audio FIFO fullness,
            we correct audio sync only if larger than this threshold */
+        // 8192 / 192000 = 0.04266
         is->audio_diff_threshold = (double)(is->audio_hw_buf_size) / is->audio_tgt.bytes_per_sec;
 
         is->audio_stream = stream_index;
@@ -3000,7 +3195,7 @@ out:
 
 static int decode_interrupt_cb(void *ctx)
 {
-    VideoState *is = ctx; // 자주 호출되고 있음
+    VideoState *is = ctx;
     return is->abort_request;
 }
 
@@ -3010,7 +3205,6 @@ static int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *q
            queue->abort_request ||
            (st->disposition & AV_DISPOSITION_ATTACHED_PIC/*1024*/) || // 첨부된 사진 스트림이면
            // 최소 프레임 이상 누적됐고, 누적된 지속 시간이 0 이거나
-           // (큐 패킷들 재생시간 정보를 아직 알수 없는 상태이며, 이 경우 MIN_FRAMES 개수만 따져도 충분)
            // 1.0초 이상이면 충분하니 이 함수를 호출하는 read_thread() 에서 대기하자!
            queue->nb_packets > MIN_FRAMES/*25*/ && (!queue->duration || av_q2d(st->time_base) * queue->duration > 1.0);
 }
@@ -3067,15 +3261,18 @@ static int read_thread(void *arg)
         ret = AVERROR(ENOMEM);
         goto fail;
     }
-    // blocking functions 이 수행되는 동안 취소할지 여부를 리턴
-    ic->interrupt_callback.callback = decode_interrupt_cb; // 자주 호출됨
+    // blocking functions 이 수행되는 동안 취소할지 여부를 리턴(자주 호출됨)
+    ic->interrupt_callback.callback = decode_interrupt_cb;
     ic->interrupt_callback.opaque = is;
     if (!av_dict_get(format_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE)) {
-        // 최초 format_opts == NULL 이라서 진입함
+        // 최초에 format_opts == NULL 이라서 진입함
         av_dict_set(&format_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
         scan_all_pmts_set = 1;
     }
-    err = avformat_open_input(&ic, is->filename, is->iformat/*NULL*/, &format_opts);
+    // avformat_open_input() 에서 비디오 ic->streams[0]->time_base 가 채워짐(1/90000)
+    // 오디오는 ic->streams[1]->time_base 가 채워짐(1/48000)
+    // ic->duration 은 AV_NOPTS_VALUE 임
+    err = avformat_open_input(&ic, is->filename, is->iformat/*NULL*/, &format_opts/*scan_all_pmts 한개만 포함됨*/);
     if (err < 0) {
         print_error(is->filename, err);
         ret = -1;
@@ -3097,8 +3294,8 @@ static int read_thread(void *arg)
         AVDictionary **opts;
         int orig_nb_streams = ic->nb_streams;
 
-        // filter_codec_opts() 가 호출돼 필요한 코덱 옵션만 전달되도록 필터링됨(잘못된 옵션 제거)
-        // codec_opts = NULL 라서 opts 도 NULL
+        // 아래 함수에서 filter_codec_opts() 를 호출해서 필요한 코덱 옵션만 전달되도록 필터링됨(잘못된 옵션 제거)
+        // codec_opts = NULL 라서 output 인 opts 도 NULL
         err = setup_find_stream_info_opts(ic, codec_opts, &opts);
         if (err < 0) {
             av_log(NULL, AV_LOG_ERROR,
@@ -3107,7 +3304,7 @@ static int read_thread(void *arg)
             goto fail;
         }
 
-        // ic 의 start_time(0),  duration(10026667), bit_rate(629116) 가 채워짐
+        // ic 의 start_time(0), duration(10026667), bit_rate(629116) 등이 채워짐
         err = avformat_find_stream_info(ic, opts);
 
         for (i = 0; i < orig_nb_streams; i++)
@@ -3122,8 +3319,8 @@ static int read_thread(void *arg)
         }
     }
 
-    // ic->pb 는 위 avformat_open_input() 에서 자동 설정됨
-    // ic->pb 는 파일 및 네트워크 I/O를 관리하는 AVIOContext* 타입
+    // ic->pb 는 위 avformat_open_input() 에서 자동 설정됨(NULL 이 아님)
+    // ic->pb 는 파일 및 네트워크 I/O를 관리하는 AVIOContext* 타입임
     if (ic->pb)
         ic->pb->eof_reached = 0; // FIXME hack, ffplay maybe should not use avio_feof() to test for the end
 
@@ -3134,11 +3331,12 @@ static int read_thread(void *arg)
                         !!(ic->iformat->flags & AVFMT_TS_DISCONT) &&
                         strcmp("ogg", ic->iformat->name);
 
-    is->max_frame_duration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
+    is->max_frame_duration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0; // 3600.0 설정됨
 
     if (!window_title && (t = av_dict_get(ic->metadata, "title", NULL, 0)))
         window_title = av_asprintf("%s - %s", t->value, input_filename);
 
+    // 시작시 전역변수 start_time 에 ic->start_time 까지 더해서 seek
     /* if seeking requested, we execute it */
     if (start_time != AV_NOPTS_VALUE) {
         av_assert0(0);
@@ -3164,14 +3362,22 @@ static int read_thread(void *arg)
         AVStream *st = ic->streams[i];
         enum AVMediaType type = st->codecpar->codec_type;
         st->discard = AVDISCARD_ALL;
-        if (type >= 0 && wanted_stream_spec[type] && st_index[type] == -1)
+        double skc_stream_duration_sec = st->duration * av_q2d(st->time_base); // i = 0 -> v: 10.0, i = 1 -> a: 10.0266
+        auto skc_st = st->start_time; // v: 0, a: 0
+        AVRational skc_tb = st->time_base; // v: 1/90000, a: 1/48000
+        if (type >= 0 && wanted_stream_spec[type] && st_index[type] == -1) {
+            av_assert0(0);
             // 스트림 스펙 문자열(예: "v:0" 또는 "a")이 주어졌을 때, AVStream이 이 조건에 부합하는지 검사
-            if (avformat_match_stream_specifier(ic, st, wanted_stream_spec[type]) > 0)
+            if (avformat_match_stream_specifier(ic, st, wanted_stream_spec[type]) > 0) {
+                av_assert0(0);
                 st_index[type] = i;
+            }
+        }
     }
     for (i = 0; i < AVMEDIA_TYPE_NB; i++) {
         if (wanted_stream_spec[i] && st_index[i] == -1) {
             av_log(NULL, AV_LOG_ERROR, "Stream specifier %s does not match any %s stream\n", wanted_stream_spec[i], av_get_media_type_string(i));
+            av_assert0(0);
             st_index[i] = INT_MAX;
         }
     }
@@ -3189,6 +3395,7 @@ static int read_thread(void *arg)
                                 st_index[AVMEDIA_TYPE_VIDEO],
                                 NULL, 0);
     if (!video_disable && !subtitle_disable)
+        // AVERROR_STREAM_NOT_FOUND/*-1381258232*/ 가 리턴중임
         st_index[AVMEDIA_TYPE_SUBTITLE] =
             av_find_best_stream(ic, AVMEDIA_TYPE_SUBTITLE,
                                 st_index[AVMEDIA_TYPE_SUBTITLE],
@@ -3202,8 +3409,7 @@ static int read_thread(void *arg)
     if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
         AVStream *st = ic->streams[st_index[AVMEDIA_TYPE_VIDEO]];
         AVCodecParameters *codecpar = st->codecpar;
-        // frame 의 sample aspect ratio 를
-        // stream(set by the demuxer) 과 frame(set by the codec) 에 기반해서 예측
+        // frame 의 sample aspect ratio 를 stream(set by the demuxer) 과 frame(set by the codec) 에 기반해서 예측
         AVRational sar = av_guess_sample_aspect_ratio(ic, st, NULL/*frame*/); // 0/1 (no idea)
         if (codecpar->width)
             set_default_window_size(codecpar->width, codecpar->height, sar);
@@ -3239,6 +3445,7 @@ static int read_thread(void *arg)
         if (is->abort_request)
             break;
         if (is->paused != is->last_paused) {
+            av_assert0(0);
             is->last_paused = is->paused;
             if (is->paused)
                 is->read_pause_return = av_read_pause(ic);
@@ -3256,7 +3463,7 @@ static int read_thread(void *arg)
         }
 #endif
         if (is->seek_req) {
-            int64_t seek_target = is->seek_pos; // 10초(10,000,000) 내에서의 값
+            int64_t seek_target = is->seek_pos;
             int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
             int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
 // FIXME the +-2 is due to rounding being not done in the correct direction in generation
@@ -3276,18 +3483,20 @@ static int read_thread(void *arg)
                 if (is->seek_flags & AVSEEK_FLAG_BYTE) {
                    set_clock(&is->extclk, NAN, 0);
                 } else {
+                   // avformat_seek_file() 후에는 set_clock() 으로 seek_target 시각으로 현재 클럭을 설정
                    set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0); // serial 을 다시 0 부터 시작
                 }
             }
             is->seek_req = 0;
-            is->queue_attachments_req = 1; // 시킹시 큐가 초기화됐으므로 1 로 다시 설정 필요
+            is->queue_attachments_req = 1; // 시킹시 큐가 초기화됐으므로 1 로 다시 설정이 필요함
             is->eof = 0;
             if (is->paused)
                 step_to_next_frame(is);
         }
         if (is->queue_attachments_req) {
             if (is->video_st && is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC/*1024*/) {
-                // 스트림 헤더에 붙어있는 정지 이미지(cover art)를 패킷(pkt)으로 복사 후, 종료
+                av_assert0(0);
+                // 스트림 헤더에 붙어있는 정지 이미지(cover art)를 패킷(pkt)으로 복사 후, 해당 큐는 종료
                 if ((ret = av_packet_ref(pkt, &is->video_st->attached_pic)) < 0)
                     goto fail;
                 packet_queue_put(&is->videoq, pkt);
@@ -3308,19 +3517,21 @@ static int read_thread(void *arg)
 #endif
             /* wait 10 ms */
             //av_assert0(0);
-            // 디코더 큐가 비워지면 empty_queue_cond 시그널(signal)이 송신되어 wait 에서 깨어남!
+            // 디코더 큐가 비워지면 empty_queue_cond 시그널(== continue_read_thread)이 송신되어 wait 에서 깨어남!
             SDL_LockMutex(wait_mutex);
             SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
-        // frame_queue_nb_remaining(&is->pictq) 와 is->sampq 가 0, 0 부터 시작해서 보통 2, 8 유지하다 재생 완료시 0, 0
-        //printf("@@skc read() remaining pictq=%d, sampq=%d\n", frame_queue_nb_remaining(&is->pictq),frame_queue_nb_remaining(&is->sampq));
+        // frame_queue_nb_remaining(&is->pictq) 와 is->sampq 가 (0, 0) 부터 시작해서 보통 (2, 8) 유지하다 재생 완료시 (0, 0)
+        // printf("read_thread() remaining pictq=%d, sampq=%d\n", frame_queue_nb_remaining(&is->pictq),frame_queue_nb_remaining(&is->sampq));
+        // is->auddec.finished = 0, is->audioq.serial = 1 로 시작함
         if (!is->paused &&
             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
             //av_assert0(0); // 종료시 호출중임
             if (loop != 1 && (!loop || --loop)) {
+                // 기본 1 이며, 0 은 무한루프, 2 이상은 해당 횟수만큼 루프
                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
             } else if (autoexit) {
                 ret = AVERROR_EOF;
@@ -3331,7 +3542,6 @@ static int read_thread(void *arg)
         ret = av_read_frame(ic, pkt);
         if (ret < 0) {
             if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof) {
-                //av_assert0(0);
                 // 실패시 pkt 은 비워져 리턴된다.
                 if (is->video_stream >= 0)
                     packet_queue_put_nullpacket(&is->videoq, pkt, is->video_stream);
@@ -3356,26 +3566,23 @@ static int read_thread(void *arg)
             is->eof = 0;
         }
         /* check if packet is in play range specified by user, then queue, otherwise discard */
-        stream_start_time = ic->streams[pkt->stream_index]->start_time; // 0
+        stream_start_time = ic->streams[pkt->stream_index]->start_time;
 
-        // 비디오 포맷이 B-frames 를 가질 경우, pts 는 AV_NOPTS_VALUE 가 될수 있으므로 dts 를 사용
+        // 비디오 포맷이 B-frames 를 가질 경우, pts 는 AV_NOPTS_VALUE 가 될수 있으며, 이 경우 dts 를 사용
         // pkt->pts = 0, 1024, 2048, 3072, ..., 889200 순서이나 0 부터 다시 시작하거나 줄어들기도 한다.
         // pkt->dts 는 보통 pts 와 동일하나 중간에 음수가 올라오기도 한다.
-        // AVStream::time_base = 1/48000
         pkt_ts = pkt->pts == AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
         av_assert0(pkt->pts >= pkt->dts);
-        //printf("@@skc pkt->pts=%d, pkt->dts=%d\n", pkt->pts, pkt->dts);
-        //static int __cnt = 0;
-        //if (pkt->pts == 0) __cnt = 0;
-        //av_assert0(__cnt++ * 1024 == pkt->pts);
 
-#if 1
-        // 1) 전역변수 duration == AV_NOPTS_VALUE 이기만 하면 다른조건 필요없이 pkt_in_play_range = 1
-        // 2) pkt_ts == 0 을 예로들면, pkt_ts 가 start_time 보다 너무 빠르지 않아야 OK
-        auto dur_ok = duration == AV_NOPTS_VALUE; // 1
-        auto pkt_ts_ = (pkt_ts - (stream_start_time != AV_NOPTS_VALUE ? stream_start_time : 0));
-        auto time_base_ = av_q2d(ic->streams[pkt->stream_index]->time_base); // (1/48000)
-        auto start_time_ = (double)(start_time != AV_NOPTS_VALUE ? start_time : 0) / 1000000;
+#if 1 // skc
+        // 현재 패킷을 출력할지 여부를 결정(duration 이 없거나, start_time ~ duration 이내인 경우 OK)
+        // pkt->pts 가 전역변수 start_time 과 duration 이내인 경우에만 pkt_in_play_range = true 가 됨
+        // 전역변수 duration == AV_NOPTS_VALUE 이기만 하면 다른조건 필요없이 pkt_in_play_range = 1
+        int dur_ok = duration == AV_NOPTS_VALUE; // 전역변수 duration 는 명령행 인자(t) 로 설정되지 않는 한 AV_NOPTS_VALUE 고정이므로 True 임
+        int64_t pkt_ts_ = (pkt_ts - (stream_start_time != AV_NOPTS_VALUE ? stream_start_time : 0));
+        double time_base_ = av_q2d(ic->streams[pkt->stream_index]->time_base); // (1/48000) -> 0.00002083
+        double start_time_ = (double)(start_time != AV_NOPTS_VALUE ? start_time : 0) / 1000000;
+        // 위에서 duration == AV_NOPTS_VALUE 인 경우 바로 리턴됐으므로, 여기서는 duration != AV_NOPTS_VALUE 인 상태임
         pkt_in_play_range = dur_ok || (pkt_ts_ * time_base_ - start_time_ <= ((double)duration / 1000000));
         av_assert0(pkt_in_play_range);
 #else // org
@@ -3388,14 +3595,17 @@ static int read_thread(void *arg)
 
         // is->video_st->disposition = 1, & AV_DISPOSITION_ATTACHED_PIC -> false
         if (pkt->stream_index == is->audio_stream && pkt_in_play_range) {
+            av_assert0(pkt->duration == 1024);
             packet_queue_put(&is->audioq, pkt);
         } else if (pkt->stream_index == is->video_stream/*0*/ && pkt_in_play_range
                    && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC/*1024*/)) {
+            // AV_DISPOSITION_ATTACHED_PIC 인 경우는 위에서 처리중이므로 큐에 추가 안한다.
+            av_assert0(pkt->duration == 0);
             packet_queue_put(&is->videoq, pkt);
         } else if (pkt->stream_index == is->subtitle_stream && pkt_in_play_range) {
             packet_queue_put(&is->subtitleq, pkt);
         } else {
-            // pkt->stream_index == 2 가 존재함. data 인듯함.
+            // 현재 pkt->stream_index == 2 가 존재함. data 인듯함.
             av_packet_unref(pkt);
         }
     }
@@ -3606,7 +3816,7 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             cursor_hidden = 1;
         }
         if (remaining_time > 0.0)
-            av_usleep((int64_t)(remaining_time * 1000000.0));
+            av_usleep((int64_t)(remaining_time * 1000000.0)); // 주석처리해도 재생 잘됨?!
         remaining_time = REFRESH_RATE;
         if (is->show_mode != SHOW_MODE_NONE && (!is->paused || is->force_refresh))
             video_refresh(is, &remaining_time);
@@ -4077,7 +4287,9 @@ int main(int argc, char **argv)
 
     show_banner(argc, argv, options);
 
-    ret = parse_options(NULL, argc, argv, options, opt_input_file);
+    // 마지막 opt_input_file 인자는 - 로 시작 안하는 인자가 존재할 경우 호출됨(non-option 처리용)
+    ret = parse_options(NULL, argc, argv, options, opt_input_file); // options: 파싱할 옵션 테이블
+    //input_filename = av_strdup("D:\\VideoPlayer\\VideoPlayer\\\\data\\mov_bbb.mp4"); ret = 0;
     if (ret < 0)
         exit(ret == AVERROR_EXIT ? 0 : 1);
 
@@ -4130,6 +4342,8 @@ int main(int argc, char **argv)
             flags |= SDL_WINDOW_RESIZABLE;
 
 #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
+//#error skc SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
+        // SDL이 X11에서 컴포지터 우회를 하지 않도록 하여, 영상 깜빡임이나 깨짐을 방지하고 더 안정적인 디스플레이를 유도합니다.
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
 #endif
         if (hwaccel && !enable_vulkan) {

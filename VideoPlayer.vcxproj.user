@@ -3,10 +3,10 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LocalDebuggerEnvironment>PATH=$(ProjectDir)\..\SDL2-2.32.2\lib\x64;$(ProjectDir)\..\FFmpeg\libswresample;$(ProjectDir)\..\FFmpeg\libavfilter;$(ProjectDir)\..\FFmpeg\libswscale;$(ProjectDir)\..\FFmpeg\libavformat;$(ProjectDir)\..\FFmpeg\libavutil;$(ProjectDir)\..\FFmpeg\libavcodec;$(ProjectDir)\..\FFmpeg\libavdevice;$(ProjectDir)\..\FFmpeg\libpostproc;%PATH%</LocalDebuggerEnvironment>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerCommandArguments>$(ProjectDir)\data\mov_bbb.mp4</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>$(ProjectDir)\data\mov_bbb.mp4 -autoexit</LocalDebuggerCommandArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <LocalDebuggerCommandArguments>$(ProjectDir)\data\mov_bbb.mp4</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>$(ProjectDir)\data\mov_bbb.mp4 -autoexit</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
     <LocalDebuggerEnvironment>PATH=$(ProjectDir)\..\SDL2-2.32.2\lib\x64;$(ProjectDir)\..\FFmpeg\libswresample;$(ProjectDir)\..\FFmpeg\libavfilter;$(ProjectDir)\..\FFmpeg\libswscale;$(ProjectDir)\..\FFmpeg\libavformat;$(ProjectDir)\..\FFmpeg\libavutil;$(ProjectDir)\..\FFmpeg\libavcodec;$(ProjectDir)\..\FFmpeg\libavdevice;$(ProjectDir)\..\FFmpeg\libpostproc;%PATH%</LocalDebuggerEnvironment>
   </PropertyGroup>
